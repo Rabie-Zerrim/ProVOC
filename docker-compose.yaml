@@ -1,0 +1,27 @@
+services:
+  backend:
+    container_name: pv-backend
+    build: .
+    ports:
+      - "${PORT}:${PORT}"
+    environment:
+      - PORT=${PORT}
+      - DATABASE_URL=${DATABASE_URL}
+    volumes:
+      - ./:/provoc
+      - /provoc/node_modules
+    depends_on:
+      - database
+
+  database:
+    container_name: pv-database
+    image: postgres:15.15
+    environment:
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASS}
+      - POSTGRES_DB=${DB_NAME}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    
+volumes:
+  pgdata:
