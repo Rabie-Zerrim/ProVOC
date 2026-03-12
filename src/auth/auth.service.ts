@@ -35,17 +35,11 @@ export class AuthService {
     }
 
     const payload = {
-      sub: credential.user_id,
       email: credential.email,
     };
 
     return {
       access_token: this.jwtService.sign(payload),
-      user: {
-        user_id: credential.user.user_id,
-        display_name: credential.user.display_name,
-        language: credential.user.language,
-      },
     };
   }
 }
