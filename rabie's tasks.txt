@@ -1,0 +1,280 @@
+﻿PS C:\Users\Rabie> [System.IO.File]::WriteAllText("\\wsl.localhost\Ubuntu\home\r
+abie\proVOC\pv-bff\rabie's tasks.txt", @"
+>> ====================================================================
+>> RABIE'S TASKS - Authentication Implementation
+>> Date: March 12, 2026
+>> ====================================================================
+>>
+>> FEATURE: User Login / Authentication
+>> Story: As a user, I want to log in to access my data.
+>>
+>> Run mode: Docker only (docker-compose up --build)
+>>
+>> ====================================================================
+>> A. NEW FILES CREATED
+>> ====================================================================
+>>
+>> --- src/auth/dto/login.dto.ts ---
+>> Validates the login request body.
+>> Fields: email (IsEmail), password (IsString, MinLength 8).
+>>
+>> --- src/auth/strategies/jwt.strategy.ts ---
+>> Passport JWT strategy.
+>> Reads JWT_SECRET from env, extracts Bearer token from Authorization header.
+>> Returns { user_id, email } on successful token validation.
+>>
+>> --- src/auth/guards/jwt-auth.guard.ts ---
+>> NestJS guard wrapping passport 'jwt' strategy.
+>> Usage: add @UseGuards(JwtAuthGuard) to any protected route.
+>>
+>> --- src/auth/auth.service.ts ---
+>> Core login logic:
+>>   1. Find UserCredential by email.
+>>   2. Compare bcrypt password hash.
+>>   3. Check user.is_active.
+>>   4. Sign and return JWT access_token + basic user info.
+>> Throws UnauthorizedException on any failure (no leaking which field is wrong)
+.
+>>
+>> --- src/auth/auth.controller.ts ---
+>> POST /auth/login
+>>   Body:  { "email": "...", "password": "..." }
+>>   Response 200: { "access_token": "<jwt>", "user": { user_id, display_name, l
+anguage } }
+>>   Response 401: Invalid credentials or inactive account.
+>>
+>> --- src/auth/auth.module.ts ---
+>> Wires PassportModule + JwtModule (async, reads JWT_SECRET / JWT_EXPIRES_IN fr
+om ConfigService).
+>> Providers: AuthService, JwtStrategy.
+>> Exports: JwtStrategy, PassportModule (so other modules can use JwtAuthGuard).
+>>
+>> --- prisma/migrations/20260312000001_add_user_credentials/migration.sql ---  
+>> Creates table "user_credentials":
+>>   - credential_id  UUID PK
+>>   - user_id        UUID UNIQUE FK -> users(user_id)
+>>   - email          VARCHAR(255) UNIQUE
+>>   - password_hash  TEXT
+>>   - created_at, updated_at TIMESTAMP
+>>
+>> --- .npmrc (NEW FILE) ---
+>> Contains: legacy-peer-deps=true
+>> Reason: @nestjs/jwt v11 peer dep declarations required during npm install in 
+Docker.
+>>
+>> ====================================================================
+>> B. EXISTING FILES MODIFIED (minimal, additive-only changes)
+>> ====================================================================
+>>
+>> --- package.json ---
+>> Added to "dependencies":
+>>   @nestjs/jwt        ^11.0.2   (v11 required for NestJS 11 peer compat)      
+>>   @nestjs/passport   ^11.0.5   (v11 required for NestJS 11 peer compat)      
+>>   passport           ^0.7.0
+>>   passport-jwt       ^4.0.1
+>>   bcryptjs           ^2.4.3
+>>   class-validator    ^0.14.1
+>>   class-transformer  ^0.5.1
+>>
+>> Added to "devDependencies":
+>>   @types/bcryptjs       ^2.4.6
+>>   @types/passport-jwt   ^4.0.1
+>>
+>> --- prisma/schema.prisma ---
+>> Added to existing User model:
+>>   credential  UserCredential?   (back-reference, non-breaking)
+>>
+>> Added new model UserCredential (after UserActivityStats):
+>>   credential_id, user_id (FK), email, password_hash, created_at, updated_at  
+>>
+>> --- src/app.module.ts ---
+>> Added import statement: import { AuthModule } from './auth/auth.module';     
+>> Added AuthModule to the imports array.
+>>
+>> --- src/main.ts ---
+>> Added import: import { ValidationPipe } from '@nestjs/common';
+>> Added:  app.useGlobalPipes(new ValidationPipe());
+>> This enables class-validator decorators on all DTOs globally.
+>>
+>> --- docker-compose.yaml ---
+>> Added to backend environment:
+>>   - JWT_SECRET=${JWT_SECRET}
+>>   - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-24h}
+>>
+>> --- .gitignore ---
+>> Added at the end:
+>>   rabie's tasks.txt    (this file - kept local, never pushed)
+>>
+>> ====================================================================
+>> C. ENVIRONMENT VARIABLES (.env)
+>> ====================================================================
+>>
+>> JWT_SECRET=pv-bff-super-secret-jwt-key-2026   # change for production!       
+>> JWT_EXPIRES_IN=24h                             # optional, defaults to 24h   
+>>
+>> ====================================================================
+>> D. HOW TO RUN THE PROJECT (Docker only)
+>> ====================================================================
+>>
+>> PREREQUISITES:
+>>   - Docker Desktop running
+>>   - .env file present at project root with JWT_SECRET set
+>>
+>> STEP 1 - First run / rebuild:
+>>
+>>   cd /home/rabie/proVOC/pv-bff
+>>   docker-compose up --build -d
+>>
+>>   (remove -d to see logs in foreground: docker-compose up --build)
+>>
+>> STEP 2 - Apply Prisma migrations:
+>>
+>>   docker exec pv-backend npx prisma migrate deploy
+>>
+>>   This creates all DB tables including user_credentials.
+>>
+>> STEP 3 - Verify containers are running:
+>>
+>>   docker ps
+>>   docker logs pv-backend --tail 30
+>>
+>>   You should see:
+>>     [RouterExplorer] Mapped {/auth/login, POST} route
+>>     [NestApplication] Nest application successfully started
+>>
+>> STEP 4 - Subsequent restarts (no rebuild needed):
+>>
+>>   docker-compose down
+>>   docker-compose up -d
+>>
+>> ====================================================================
+>> E. HOW TO TEST THE AUTH ENDPOINT
+>> ====================================================================
+>>
+>> Base URL: http://localhost:3001
+>>
+>> ----------------------------------------------------------------------       
+>> TEST 1 - Successful login (200 OK)
+>> ----------------------------------------------------------------------       
+>>
+>>   curl -X POST http://localhost:3001/auth/login \
+>>     -H "Content-Type: application/json" \
+>>     -d '{"email": "rabie@zembratech.com", "password": "testpass1"}'
+>>
+>>   Expected response (200):
+>>   {
+>>     "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+>>     "user": {
+>>       "user_id": "a1b2c3d4-0000-0000-0000-000000000001",
+>>       "display_name": "Rabie",
+>>       "language": "fr"
+>>     }
+>>   }
+>>
+>> ----------------------------------------------------------------------       
+>> TEST 2 - Wrong password (401 Unauthorized)
+>> ----------------------------------------------------------------------       
+>>
+>>   curl -X POST http://localhost:3001/auth/login \
+>>     -H "Content-Type: application/json" \
+>>     -d '{"email": "rabie@zembratech.com", "password": "wrongpassword"}'
+>>
+>>   Expected response (401):
+>>   { "statusCode": 401, "message": "Invalid credentials" }
+>>
+>> ----------------------------------------------------------------------       
+>> TEST 3 - Unknown email (401 Unauthorized)
+>> ----------------------------------------------------------------------       
+>>
+>>   curl -X POST http://localhost:3001/auth/login \
+>>     -H "Content-Type: application/json" \
+>>     -d '{"email": "unknown@test.com", "password": "testpass1"}'
+>>
+>>   Expected response (401):
+>>   { "statusCode": 401, "message": "Invalid credentials" }
+>>
+>> ----------------------------------------------------------------------       
+>> TEST 4 - Invalid request body (400 Bad Request)
+>> ----------------------------------------------------------------------       
+>>
+>>   curl -X POST http://localhost:3001/auth/login \
+>>     -H "Content-Type: application/json" \
+>>     -d '{"email": "notanemail", "password": "short"}'
+>>
+>>   Expected response (400):
+>>   {
+>>     "statusCode": 400,
+>>     "message": [
+>>       "email must be an email",
+>>       "password must be longer than or equal to 8 characters"
+>>     ],
+>>     "error": "Bad Request"
+>>   }
+>>
+>> ----------------------------------------------------------------------       
+>> TEST 5 - Using the JWT token on a protected route
+>> ----------------------------------------------------------------------       
+>>
+>>   TOKEN=$(curl -s -X POST http://localhost:3001/auth/login \
+>>     -H "Content-Type: application/json" \
+>>     -d '{"email": "rabie@zembratech.com", "password": "testpass1"}' \
+>>     | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token']
+)")
+>>
+>>   curl -H "Authorization: Bearer $TOKEN" http://localhost:3001/some-protected
+-route
+>>
+>>   To protect a route, add @UseGuards(JwtAuthGuard) to the handler:
+>>
+>>     import { UseGuards } from '@nestjs/common';
+>>     import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+>>
+>>     @UseGuards(JwtAuthGuard)
+>>     @Get('me')
+>>     getProfile(@Request() req) { return req.user; }
+>>
+>> ----------------------------------------------------------------------       
+>> ALL TESTS CONFIRMED PASSING on 2026-03-12:
+>>   - 200 OK with valid credentials   [PASS]
+>>   - 401 with wrong password         [PASS]
+>>   - 401 with unknown email          [PASS]
+>>   - 400 with invalid request body   [PASS]
+>> ----------------------------------------------------------------------       
+>>
+>> ====================================================================
+>> F. SEED USER (already applied to local DB)
+>> ====================================================================
+>>
+>> Test user credentials:
+>>   email:    rabie@zembratech.com
+>>   password: testpass1
+>>
+>> To re-seed on a fresh DB:
+>>
+>>   1. Generate bcrypt hash:
+>>      docker exec pv-backend node -e "const b=require('bcryptjs'); b.hash('tes
+tpass1',10).then(h=>console.log(h))"
+>>
+>>   2. Insert into DB:
+>>      docker exec pv-database psql -U postgres -d provoc_db
+>>
+>>      Then run:
+>>      INSERT INTO users (user_id, display_name, language, age_verified, is_act
+ive, updated_at)
+>>      VALUES ('a1b2c3d4-0000-0000-0000-000000000001','Rabie','fr',true,true,NO
+W())
+>>      ON CONFLICT DO NOTHING;
+>>
+>>      INSERT INTO user_credentials (credential_id, user_id, email, password_ha
+sh, updated_at)
+>>      VALUES ('b2c3d4e5-0000-0000-0000-000000000001',
+>>              'a1b2c3d4-0000-0000-0000-000000000001',
+>>              'rabie@zembratech.com',
+>>              '<hash from step 1>',
+>>              NOW())
+>>      ON CONFLICT DO NOTHING;
+>>
+>> ====================================================================
+>> "@, [System.Text.Encoding]::UTF8)
+>> Write-Host "tasks file written"
+>>
