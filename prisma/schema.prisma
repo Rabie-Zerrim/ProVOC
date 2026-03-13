@@ -1,3 +1,6 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -7,23 +10,27 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ============================================================
+// 🔵 MODULE 1 — UTILISATEUR & ACCÈS
+// ============================================================
+
 model User {
-  user_id           String                @id @default(uuid()) @db.Uuid
-  display_name      String                @db.VarChar(100)
-  language          String                @default("fr") @db.VarChar(10)
-  age_verified      Boolean               @default(false)
-  is_active         Boolean               @default(true)
-  created_at        DateTime              @default(now())
-  updated_at        DateTime              @updatedAt
-  consents          DataConsent[]
-  notifications     Notification[]
-  reviews           Review[]
-  activity_stats    UserActivityStats?
-  credential        UserCredential?
-  platform_accounts UserPlatformAccount[]
+  user_id           String    @id @default(uuid()) @db.Uuid
+  display_name      String    @db.VarChar(100)
+  language          String    @default("fr") @db.VarChar(10)
+  age_verified      Boolean   @default(false)
+  is_active         Boolean   @default(true)
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+
   preferences       UserPreference?
-  assigned_roles    UserRole[]            @relation("RoleAssigner")
-  roles             UserRole[]            @relation("UserRoles")
+  consents          DataConsent[]
+  roles             UserRole[]           @relation("UserRoles")
+  assigned_roles    UserRole[]           @relation("RoleAssigner")
+  activity_stats    UserActivityStats?
+  reviews           Review[]
+  platform_accounts UserPlatformAccount[]
+  notifications     Notification[]
 
   @@map("users")
 }
@@ -31,13 +38,13 @@ model User {
 model UserPreference {
   pref_id               String   @id @default(uuid()) @db.Uuid
   user_id               String   @unique @db.Uuid
+  user                  User     @relation(fields: [user_id], references: [user_id])
   default_tone          String?
   preferred_networks    Json?
   review_reminder_delay Int?
   location_tracking     Boolean  @default(false)
   created_at            DateTime @default(now())
   updated_at            DateTime @updatedAt
-  user                  User     @relation(fields: [user_id], references: [user_id])
 
   @@map("user_preferences")
 }
@@ -45,6 +52,7 @@ model UserPreference {
 model DataConsent {
   consent_id   String    @id @default(uuid()) @db.Uuid
   user_id      String    @db.Uuid
+  user         User      @relation(fields: [user_id], references: [user_id])
   consent_type String
   is_given     Boolean   @default(false)
   given_at     DateTime?
@@ -52,58 +60,59 @@ model DataConsent {
   version      String?
   ip_address   String?
   created_at   DateTime  @default(now())
-  user         User      @relation(fields: [user_id], references: [user_id])
 
   @@map("data_consent")
 }
 
 model Role {
-  role_id     String           @id @default(uuid()) @db.Uuid
-  name        String           @unique
+  role_id     String   @id @default(uuid()) @db.Uuid
+  name        String   @unique
   description String?
-  is_system   Boolean          @default(false)
-  created_at  DateTime         @default(now())
-  updated_at  DateTime         @updatedAt
-  permissions RolePermission[]
+  is_system   Boolean  @default(false)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
   user_roles  UserRole[]
+  permissions RolePermission[]
 
   @@map("roles")
 }
 
 model Permission {
-  permission_id    String           @id @default(uuid()) @db.Uuid
-  name             String           @unique
-  description      String?
-  resource         String
-  action           String
-  created_at       DateTime         @default(now())
+  permission_id String   @id @default(uuid()) @db.Uuid
+  name          String   @unique
+  description   String?
+  resource      String
+  action        String
+  created_at    DateTime @default(now())
+
   role_permissions RolePermission[]
 
   @@map("permissions")
 }
 
 model RolePermission {
-  role_perm_id  String     @id @default(uuid()) @db.Uuid
-  role_id       String     @db.Uuid
-  permission_id String     @db.Uuid
-  created_at    DateTime   @default(now())
+  role_perm_id  String   @id @default(uuid()) @db.Uuid
+  role_id       String   @db.Uuid
+  role          Role     @relation(fields: [role_id], references: [role_id])
+  permission_id String   @db.Uuid
   permission    Permission @relation(fields: [permission_id], references: [permission_id])
-  role          Role       @relation(fields: [role_id], references: [role_id])
+  created_at    DateTime @default(now())
 
   @@map("role_permissions")
 }
 
 model UserRole {
-  user_role_id     String    @id @default(uuid()) @db.Uuid
-  user_id          String    @db.Uuid
-  role_id          String    @db.Uuid
-  assigned_by      String?   @db.Uuid
-  assigned_at      DateTime
-  expires_at       DateTime?
-  created_at       DateTime  @default(now())
-  assigned_by_user User?     @relation("RoleAssigner", fields: [assigned_by], references: [user_id])
-  role             Role      @relation(fields: [role_id], references: [role_id])
-  user             User      @relation("UserRoles", fields: [user_id], references: [user_id])
+  user_role_id String    @id @default(uuid()) @db.Uuid
+  user_id      String    @db.Uuid
+  user         User      @relation("UserRoles", fields: [user_id], references: [user_id])
+  role_id      String    @db.Uuid
+  role         Role      @relation(fields: [role_id], references: [role_id])
+  assigned_by  String?   @db.Uuid
+  assigned_by_user User? @relation("RoleAssigner", fields: [assigned_by], references: [user_id])
+  assigned_at  DateTime
+  expires_at   DateTime?
+  created_at   DateTime  @default(now())
 
   @@map("user_roles")
 }
@@ -111,6 +120,7 @@ model UserRole {
 model UserActivityStats {
   stat_id                String    @id @default(uuid()) @db.Uuid
   user_id                String    @unique @db.Uuid
+  user                   User      @relation(fields: [user_id], references: [user_id])
   reputation_score       Int       @default(0)
   total_reviews          Int       @default(0)
   most_reviewed_category String?
@@ -118,42 +128,34 @@ model UserActivityStats {
   last_calculated_at     DateTime?
   created_at             DateTime  @default(now())
   updated_at             DateTime  @updatedAt
-  user                   User      @relation(fields: [user_id], references: [user_id])
 
   @@map("user_activity_stats")
 }
 
-model UserCredential {
-  credential_id String   @id @default(uuid()) @db.Uuid
-  user_id       String   @unique @db.Uuid
-  email         String   @unique @db.VarChar(255)
-  password_hash String
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
-  user          User     @relation(fields: [user_id], references: [user_id])
-
-  @@map("user_credentials")
-}
+// ============================================================
+// 🟢 MODULE 2 — BUSINESS
+// ============================================================
 
 model Business {
-  business_id        String     @id @default(uuid()) @db.Uuid
-  name               String     @db.VarChar(255)
-  parent_business_id String?    @db.Uuid
-  business_type      String?
-  is_online_only     Boolean    @default(false)
-  is_claimed         Boolean    @default(false)
-  is_active          Boolean    @default(true)
-  public_page_slug   String?    @unique
-  qr_code_url        String?
-  avg_rating         Decimal?   @db.Decimal(3, 2)
-  total_reviews      Int        @default(0)
-  address            String?
-  latitude           Decimal?   @db.Decimal(10, 8)
-  longitude          Decimal?   @db.Decimal(11, 8)
-  created_at         DateTime   @default(now())
-  updated_at         DateTime   @updatedAt
-  parent_business    Business?  @relation("BusinessChain", fields: [parent_business_id], references: [business_id])
+  business_id        String   @id @default(uuid()) @db.Uuid
+  name               String   @db.VarChar(255)
+  parent_business_id String?  @db.Uuid
+  parent_business    Business? @relation("BusinessChain", fields: [parent_business_id], references: [business_id])
   sub_businesses     Business[] @relation("BusinessChain")
+  business_type      String?
+  is_online_only     Boolean  @default(false)
+  is_claimed         Boolean  @default(false)
+  is_active          Boolean  @default(true)
+  public_page_slug   String?  @unique
+  qr_code_url        String?
+  avg_rating         Decimal? @db.Decimal(3, 2)
+  total_reviews      Int      @default(0)
+  address            String?
+  latitude           Decimal? @db.Decimal(10, 8)
+  longitude          Decimal? @db.Decimal(11, 8)
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+
   listings           Listing[]
   reviews            Review[]
 
@@ -161,37 +163,43 @@ model Business {
 }
 
 model Listing {
-  listing_id          String               @id @default(uuid()) @db.Uuid
-  business_id         String               @db.Uuid
-  network_id          String               @db.Uuid
+  listing_id          String   @id @default(uuid()) @db.Uuid
+  business_id         String   @db.Uuid
+  business            Business @relation(fields: [business_id], references: [business_id])
+  network_id          String   @db.Uuid
+  network             Network  @relation(fields: [network_id], references: [network_id])
   external_listing_id String?
-  external_rating     Decimal?             @db.Decimal(3, 2)
+  external_rating     Decimal? @db.Decimal(3, 2)
   external_url        String?
-  is_active           Boolean              @default(true)
+  is_active           Boolean  @default(true)
   last_synced_at      DateTime?
-  created_at          DateTime             @default(now())
-  updated_at          DateTime             @updatedAt
-  business            Business             @relation(fields: [business_id], references: [business_id])
-  network             Network              @relation(fields: [network_id], references: [network_id])
-  platform_posts      ReviewPlatformPost[]
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+
   reviews             Review[]
+  platform_posts      ReviewPlatformPost[]
 
   @@map("listings")
 }
 
+// ============================================================
+// 🟠 MODULE 3 — NETWORKS & COMPTES
+// ============================================================
+
 model Network {
-  network_id     String                @id @default(uuid()) @db.Uuid
-  name           String                @db.VarChar(100)
-  base_url       String?
-  logo_url       String?
-  is_active      Boolean               @default(true)
-  created_at     DateTime              @default(now())
-  updated_at     DateTime              @updatedAt
-  listings       Listing[]
+  network_id  String   @id @default(uuid()) @db.Uuid
+  name        String   @db.VarChar(100)
+  base_url    String?
+  logo_url    String?
+  is_active   Boolean  @default(true)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
   preferences    NetworkPreference?
+  user_accounts  UserPlatformAccount[]
+  listings       Listing[]
   review_drafts  ReviewDraft[]
   platform_posts ReviewPlatformPost[]
-  user_accounts  UserPlatformAccount[]
 
   @@map("networks")
 }
@@ -199,6 +207,7 @@ model Network {
 model NetworkPreference {
   network_pref_id           String   @id @default(uuid()) @db.Uuid
   network_id                String   @unique @db.Uuid
+  network                   Network  @relation(fields: [network_id], references: [network_id])
   max_chars_post            Int?
   min_chars_post            Int?
   rating_type               String
@@ -220,51 +229,56 @@ model NetworkPreference {
   reply_requires_ownership  Boolean  @default(true)
   created_at                DateTime @default(now())
   updated_at                DateTime @updatedAt
-  network                   Network  @relation(fields: [network_id], references: [network_id])
 
   @@map("network_preferences")
 }
 
 model UserPlatformAccount {
-  account_id       String               @id @default(uuid()) @db.Uuid
-  user_id          String               @db.Uuid
-  network_id       String               @db.Uuid
+  account_id       String    @id @default(uuid()) @db.Uuid
+  user_id          String    @db.Uuid
+  user             User      @relation(fields: [user_id], references: [user_id])
+  network_id       String    @db.Uuid
+  network          Network   @relation(fields: [network_id], references: [network_id])
   oauth_token      String?
   refresh_token    String?
   token_expires_at DateTime?
-  is_primary       Boolean              @default(false)
+  is_primary       Boolean   @default(false)
   external_user_id String?
-  is_active        Boolean              @default(true)
+  is_active        Boolean   @default(true)
   connected_at     DateTime?
-  created_at       DateTime             @default(now())
+  created_at       DateTime  @default(now())
+
   platform_posts   ReviewPlatformPost[]
-  network          Network              @relation(fields: [network_id], references: [network_id])
-  user             User                 @relation(fields: [user_id], references: [user_id])
 
   @@map("user_platform_accounts")
 }
 
+// ============================================================
+// 🔴 MODULE 4 — REVIEW — TABLE CENTRALE
+// ============================================================
+
 model Review {
-  review_id      String               @id @default(uuid()) @db.Uuid
-  user_id        String               @db.Uuid
-  business_id    String               @db.Uuid
-  listing_id     String?              @db.Uuid
-  review_text    String
-  rating         Int
-  status         String
-  tone           String?
-  intent         String?
-  language       String?              @db.VarChar(10)
-  created_at     DateTime             @default(now())
-  updated_at     DateTime             @updatedAt
-  deleted_at     DateTime?
-  drafts         ReviewDraft[]
-  histories      ReviewHistory[]
-  medias         ReviewMedia[]
+  review_id   String    @id @default(uuid()) @db.Uuid
+  user_id     String    @db.Uuid
+  user        User      @relation(fields: [user_id], references: [user_id])
+  business_id String    @db.Uuid
+  business    Business  @relation(fields: [business_id], references: [business_id])
+  listing_id  String?   @db.Uuid
+  listing     Listing?  @relation(fields: [listing_id], references: [listing_id])
+  review_text String
+  rating      Int
+  status      String
+  tone        String?
+  intent      String?
+  language    String?   @db.VarChar(10)
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+  deleted_at  DateTime?
+
+  medias      ReviewMedia[]
+  histories   ReviewHistory[]
+  drafts      ReviewDraft[]
   platform_posts ReviewPlatformPost[]
-  business       Business             @relation(fields: [business_id], references: [business_id])
-  listing        Listing?             @relation(fields: [listing_id], references: [listing_id])
-  user           User                 @relation(fields: [user_id], references: [user_id])
 
   @@map("reviews")
 }
@@ -272,6 +286,7 @@ model Review {
 model ReviewMedia {
   media_id          String   @id @default(uuid()) @db.Uuid
   review_id         String   @db.Uuid
+  review            Review   @relation(fields: [review_id], references: [review_id])
   media_type        String?
   s3_key            String
   original_filename String?
@@ -280,7 +295,6 @@ model ReviewMedia {
   thumbnail_url     String?
   uploaded_at       DateTime @default(now())
   created_at        DateTime @default(now())
-  review            Review   @relation(fields: [review_id], references: [review_id])
 
   @@map("review_medias")
 }
@@ -288,6 +302,7 @@ model ReviewMedia {
 model ReviewHistory {
   history_id      String   @id @default(uuid()) @db.Uuid
   review_id       String   @db.Uuid
+  review          Review   @relation(fields: [review_id], references: [review_id])
   previous_status String?
   new_status      String
   snapshot_text   String?
@@ -295,7 +310,6 @@ model ReviewHistory {
   changed_by_id   String?  @db.Uuid
   reason          String?
   created_at      DateTime @default(now())
-  review          Review   @relation(fields: [review_id], references: [review_id])
 
   @@map("review_histories")
 }
@@ -303,56 +317,60 @@ model ReviewHistory {
 model ReviewDraft {
   draft_id         String   @id @default(uuid()) @db.Uuid
   review_id        String   @db.Uuid
+  review           Review   @relation(fields: [review_id], references: [review_id])
   network_id       String?  @db.Uuid
+  network          Network? @relation(fields: [network_id], references: [network_id])
   version          Int      @default(1)
   draft_text       String
   compliance_check Boolean  @default(true)
   is_selected      Boolean  @default(false)
   created_at       DateTime @default(now())
-  network          Network? @relation(fields: [network_id], references: [network_id])
-  review           Review   @relation(fields: [review_id], references: [review_id])
 
   @@map("review_drafts")
 }
 
+// ============================================================
+// 🟡 MODULE 5 — PUBLICATION & NOTIFICATIONS
+// ============================================================
+
 model ReviewPlatformPost {
-  post_id                  String              @id @default(uuid()) @db.Uuid
-  review_id                String              @db.Uuid
-  network_id               String              @db.Uuid
-  listing_id               String?             @db.Uuid
-  user_platform_account_id String              @db.Uuid
+  post_id                  String   @id @default(uuid()) @db.Uuid
+  review_id                String   @db.Uuid
+  review                   Review   @relation(fields: [review_id], references: [review_id])
+  network_id               String   @db.Uuid
+  network                  Network  @relation(fields: [network_id], references: [network_id])
+  listing_id               String?  @db.Uuid
+  listing                  Listing? @relation(fields: [listing_id], references: [listing_id])
+  user_platform_account_id String   @db.Uuid
+  user_account             UserPlatformAccount @relation(fields: [user_platform_account_id], references: [account_id])
   external_review_id       String?
   status                   String
   platform_specific_text   String?
   scheduled_at             DateTime?
   posted_at                DateTime?
-  retry_count              Int                 @default(0)
-  likes_count              Int                 @default(0)
+  retry_count              Int      @default(0)
+  likes_count              Int      @default(0)
   error_message            String?
-  created_at               DateTime            @default(now())
-  updated_at               DateTime            @updatedAt
-  listing                  Listing?            @relation(fields: [listing_id], references: [listing_id])
-  network                  Network             @relation(fields: [network_id], references: [network_id])
-  review                   Review              @relation(fields: [review_id], references: [review_id])
-  user_account             UserPlatformAccount @relation(fields: [user_platform_account_id], references: [account_id])
+  created_at               DateTime @default(now())
+  updated_at               DateTime @updatedAt
 
   @@map("review_platform_posts")
 }
 
 model Notification {
-  notification_id String    @id @default(uuid()) @db.Uuid
-  user_id         String    @db.Uuid
+  notification_id String   @id @default(uuid()) @db.Uuid
+  user_id         String   @db.Uuid
+  user            User     @relation(fields: [user_id], references: [user_id])
   type            String
   category        String?
-  title           String?   @db.VarChar(255)
+  title           String?  @db.VarChar(255)
   body            String?
   data            Json?
-  is_read         Boolean   @default(false)
-  is_sent         Boolean   @default(false)
+  is_read         Boolean  @default(false)
+  is_sent         Boolean  @default(false)
   sent_at         DateTime?
   scheduled_for   DateTime?
-  created_at      DateTime  @default(now())
-  user            User      @relation(fields: [user_id], references: [user_id])
+  created_at      DateTime @default(now())
 
   @@map("notifications")
 }
