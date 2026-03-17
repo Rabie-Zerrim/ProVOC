@@ -17,6 +17,22 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  
+
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 25.2.1
+          cache: 'npm'
+          check-latest: true
+          
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npx eslint "{src,apps,libs,test}/**/*.ts" --format json --output-file eslint-report.json || true
+
+      - name: Run tests with coverage
+        run: npm run test:cov
+
       - uses: SonarSource/sonarqube-scan-action@v6
         name: SonarQube Scan
         env:
