@@ -31,6 +31,7 @@ model User {
   reviews           Review[]
   platform_accounts UserPlatformAccount[]
   notifications     Notification[]
+  user_credentials  user_credentials?
 
   @@map("users")
 }
@@ -132,6 +133,16 @@ model UserActivityStats {
   @@map("user_activity_stats")
 }
 
+model user_credentials {
+  credential_id String   @id @db.Uuid
+  user_id       String   @unique @db.Uuid
+  email         String   @unique @db.VarChar(255)
+  password_hash String
+  created_at    DateTime @default(now())
+  updated_at    DateTime @default(now()) @updatedAt
+  user          User     @relation(fields: [user_id], references: [user_id])
+}
+
 // ============================================================
 // 🟢 MODULE 2 — BUSINESS
 // ============================================================
@@ -153,11 +164,14 @@ model Business {
   address            String?
   latitude           Decimal? @db.Decimal(10, 8)
   longitude          Decimal? @db.Decimal(11, 8)
+  tags               String[]
   created_at         DateTime @default(now())
   updated_at         DateTime @updatedAt
 
   listings           Listing[]
   reviews            Review[]
+  category_id        String?  @db.Uuid
+  category           Category? @relation(fields: [category_id], references: [category_id])
 
   @@map("businesses")
 }
@@ -180,6 +194,18 @@ model Listing {
   platform_posts      ReviewPlatformPost[]
 
   @@map("listings")
+}
+
+model Category {
+  category_id String     @id @default(uuid()) @db.Uuid
+  name        String     @unique @db.VarChar(100)
+  description String?
+  created_at  DateTime   @default(now())
+  updated_at  DateTime   @updatedAt
+
+  businesses  Business[]
+
+  @@map("categories")
 }
 
 // ============================================================
@@ -227,6 +253,9 @@ model NetworkPreference {
   supports_api_reply        Boolean  @default(false)
   reply_auth_type           String?
   reply_requires_ownership  Boolean  @default(true)
+  supports_food_rating      Boolean  @default(false)
+  supports_service_rating   Boolean  @default(false)
+  supports_ambiance_rating  Boolean  @default(false)
   created_at                DateTime @default(now())
   updated_at                DateTime @updatedAt
 
