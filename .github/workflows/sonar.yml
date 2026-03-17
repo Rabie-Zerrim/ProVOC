@@ -1,0 +1,53 @@
+name: Run SonarQube analysis
+
+on:
+  push:
+    branches:
+      - master
+  pull_request: 
+    types: [opened, synchronize, reopened]
+
+
+jobs:
+  build:
+    name: Build and analyze
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  
+
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 25.2.1
+          cache: 'npm'
+          check-latest: true
+          
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npx eslint "{src,apps,libs,test}/**/*.ts" --format json --output-file eslint-report.json || true
+
+      - name: Generate Prisma Client 
+        run: npx prisma generate
+
+      - name: Run tests with coverage
+        run: npm run test:cov
+
+      - uses: SonarSource/sonarqube-scan-action@v6
+        name: SonarQube Scan
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=300
+      # If you wish to fail your job when the Quality Gate is red, uncomment the
+      # following lines. This would typically be used to fail a deployment.
+      - uses: SonarSource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
