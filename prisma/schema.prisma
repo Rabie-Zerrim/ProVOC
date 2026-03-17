@@ -170,7 +170,8 @@ model Business {
 
   listings           Listing[]
   reviews            Review[]
-  categories         Category[] @relation("BusinessCategories")
+  category_id        String?  @db.Uuid
+  category           Category? @relation(fields: [category_id], references: [category_id])
 
   @@map("businesses")
 }
@@ -202,7 +203,7 @@ model Category {
   created_at  DateTime   @default(now())
   updated_at  DateTime   @updatedAt
 
-  businesses  Business[] @relation("BusinessCategories")
+  businesses  Business[]
 
   @@map("categories")
 }
