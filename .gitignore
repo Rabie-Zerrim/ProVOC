@@ -39,3 +39,6 @@ Thumbs.db
 .eslintcache
 .nyc_output/
 /generated/prisma
+
+# local only
+documentation

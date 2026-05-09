@@ -1,11 +1,8 @@
 name: Run SonarQube analysis
 
+# SonarQube disabled — configure SONAR_TOKEN and SONAR_HOST_URL secrets before re-enabling
 on:
-  push:
-    branches:
-      - master
-  pull_request: 
-    types: [opened, synchronize, reopened]
+  workflow_dispatch:
 
 
 jobs:
