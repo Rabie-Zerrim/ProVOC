@@ -10,6 +10,8 @@ services:
     volumes:
       - ./:/provoc
       - /provoc/node_modules
+    extra_hosts:
+      - "localapi.zembra.io:host-gateway"
     depends_on:
       database:
         condition: service_healthy
