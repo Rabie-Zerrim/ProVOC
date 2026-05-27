@@ -1,13 +1,20 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { NotFoundException, ForbiddenException } from '@nestjs/common';
+import { NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { getQueueToken } from '@nestjs/bullmq';
 import { ReviewsService } from './reviews.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { AiService } from '../ai/ai.service';
+import { POSTING_QUEUE } from './posting.constants';
 
 const USER_ID = 'user-uuid-1';
 const OTHER_USER_ID = 'user-uuid-other';
 const BUSINESS_ID = 'biz-uuid-1';
 const LISTING_ID = 'listing-uuid-1';
 const REVIEW_ID = 'review-uuid-1';
+const NETWORK_ID = 'net-uuid-1';
+const NETWORK_ID_2 = 'net-uuid-2';
+const POST_ID = 'post-uuid-1';
+const ACCOUNT_ID = 'account-uuid-1';
 
 const mockListing = {
   listing_id: LISTING_ID,
@@ -33,6 +40,7 @@ const mockReview = {
   tone: 'polite',
   intent: null,
   language: 'en',
+  ai_session_id: null,
   created_at: new Date(),
   updated_at: new Date(),
   deleted_at: null,
@@ -42,33 +50,79 @@ const mockReview = {
 
 describe('ReviewsService', () => {
   let service: ReviewsService;
+  let mockQueue: { add: jest.Mock };
+  let aiService: {
+    transcribeAudio: jest.Mock;
+    startChat: jest.Mock;
+    sendMessage: jest.Mock;
+    approveDraft: jest.Mock;
+    endSession: jest.Mock;
+  };
   let prisma: {
-    listing: { findUnique: jest.Mock };
+    listing: { findUnique: jest.Mock; findMany: jest.Mock };
     review: {
       create: jest.Mock;
       findMany: jest.Mock;
       count: jest.Mock;
       findFirst: jest.Mock;
       update: jest.Mock;
+      groupBy: jest.Mock;
+      aggregate: jest.Mock;
     };
+    business: { findMany: jest.Mock };
+    network: { findUnique: jest.Mock };
+    reviewDraft: { findFirst: jest.Mock; findMany: jest.Mock; updateMany: jest.Mock };
+    userPlatformAccount: { findFirst: jest.Mock; create: jest.Mock };
+    reviewPlatformPost: {
+      create: jest.Mock;
+      findMany: jest.Mock;
+      update: jest.Mock;
+    };
+    notification: { create: jest.Mock };
+    $queryRaw: jest.Mock;
   };
 
   beforeEach(async () => {
+    mockQueue = { add: jest.fn() };
+
+    aiService = {
+      transcribeAudio: jest.fn(),
+      startChat: jest.fn(),
+      sendMessage: jest.fn(),
+      approveDraft: jest.fn(),
+      endSession: jest.fn(),
+    };
+
     prisma = {
-      listing: { findUnique: jest.fn() },
+      listing: { findUnique: jest.fn(), findMany: jest.fn() },
       review: {
         create: jest.fn(),
         findMany: jest.fn(),
         count: jest.fn(),
         findFirst: jest.fn(),
         update: jest.fn(),
+        groupBy: jest.fn(),
+        aggregate: jest.fn(),
       },
+      business: { findMany: jest.fn() },
+      network: { findUnique: jest.fn() },
+      reviewDraft: { findFirst: jest.fn(), findMany: jest.fn(), updateMany: jest.fn() },
+      userPlatformAccount: { findFirst: jest.fn(), create: jest.fn() },
+      reviewPlatformPost: {
+        create: jest.fn(),
+        findMany: jest.fn(),
+        update: jest.fn(),
+      },
+      notification: { create: jest.fn() },
+      $queryRaw: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ReviewsService,
         { provide: PrismaService, useValue: prisma },
+        { provide: getQueueToken(POSTING_QUEUE), useValue: mockQueue },
+        { provide: AiService, useValue: aiService },
       ],
     }).compile();
 
@@ -134,7 +188,7 @@ describe('ReviewsService', () => {
         }),
       );
       expect(result.data).toEqual([mockReview]);
-      expect(result.meta).toEqual({ total: 1, page: 1, limit: 10, last_page: 1 });
+      expect(result.meta).toEqual({ total: 1, page: 1, limit: 10, total_pages: 1 });
     });
 
     it('computes correct skip for page 2', async () => {
@@ -148,17 +202,20 @@ describe('ReviewsService', () => {
       );
     });
 
-    it('filters by status when provided', async () => {
+    it('filters by status and paginates correctly (status=draft, page=1, limit=5)', async () => {
       prisma.review.findMany.mockResolvedValue([mockReview]);
       prisma.review.count.mockResolvedValue(1);
 
-      await service.findAll(USER_ID, { status: 'draft', page: 1, limit: 10 });
+      const result = await service.findAll(USER_ID, { status: 'draft', page: 1, limit: 5 });
 
       expect(prisma.review.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: expect.objectContaining({ status: 'draft' }),
+          where: expect.objectContaining({ user_id: USER_ID, status: 'draft' }),
+          skip: 0,
+          take: 5,
         }),
       );
+      expect(result.meta).toEqual({ total: 1, page: 1, limit: 5, total_pages: 1 });
     });
 
     it('filters by listing_id when provided', async () => {
@@ -171,6 +228,45 @@ describe('ReviewsService', () => {
         expect.objectContaining({
           where: expect.objectContaining({ listing_id: LISTING_ID }),
         }),
+      );
+    });
+
+    it('filters by business_id when provided', async () => {
+      prisma.review.findMany.mockResolvedValue([mockReview]);
+      prisma.review.count.mockResolvedValue(1);
+
+      await service.findAll(USER_ID, { business_id: BUSINESS_ID, page: 1, limit: 10 });
+
+      expect(prisma.review.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ business_id: BUSINESS_ID }),
+        }),
+      );
+    });
+
+    it('applies case-insensitive contains filter when search is provided', async () => {
+      prisma.review.findMany.mockResolvedValue([mockReview]);
+      prisma.review.count.mockResolvedValue(1);
+
+      await service.findAll(USER_ID, { search: 'great', page: 1, limit: 10 });
+
+      expect(prisma.review.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            review_text: { contains: 'great', mode: 'insensitive' },
+          }),
+        }),
+      );
+    });
+
+    it('sorts by rating ascending when sort_by=rating and sort_order=asc', async () => {
+      prisma.review.findMany.mockResolvedValue([mockReview]);
+      prisma.review.count.mockResolvedValue(1);
+
+      await service.findAll(USER_ID, { sort_by: 'rating', sort_order: 'asc', page: 1, limit: 10 });
+
+      expect(prisma.review.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ orderBy: { rating: 'asc' } }),
       );
     });
 
@@ -197,14 +293,230 @@ describe('ReviewsService', () => {
       );
     });
 
-    it('returns last_page=1 when there are no results', async () => {
+    it('caps limit at 50 when a higher value is provided', async () => {
+      prisma.review.findMany.mockResolvedValue([]);
+      prisma.review.count.mockResolvedValue(0);
+
+      await service.findAll(USER_ID, { page: 1, limit: 100 });
+
+      expect(prisma.review.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 50 }),
+      );
+    });
+
+    it('returns total_pages=0 when there are no results', async () => {
       prisma.review.findMany.mockResolvedValue([]);
       prisma.review.count.mockResolvedValue(0);
 
       const result = await service.findAll(USER_ID, { page: 1, limit: 10 });
 
-      expect(result.meta.last_page).toBe(0);
+      expect(result.meta.total_pages).toBe(0);
       expect(result.data).toEqual([]);
+    });
+  });
+
+  // ── getDashboard ─────────────────────────────────────────────────────────────
+
+  describe('getDashboard', () => {
+    const BIZ_2 = 'biz-uuid-2';
+    const BIZ_3 = 'biz-uuid-3';
+
+    const mockByStatusRaw = [
+      { status: 'draft', _count: { status: 2 } },
+      { status: 'pending', _count: { status: 1 } },
+      { status: 'published', _count: { status: 5 } },
+    ];
+
+    const mockRecentReviews = [
+      {
+        review_id: 'r1',
+        rating: 5,
+        status: 'published',
+        created_at: new Date('2024-03-01'),
+        business: { name: 'Alpha Café' },
+      },
+      {
+        review_id: 'r2',
+        rating: 4,
+        status: 'draft',
+        created_at: new Date('2024-02-28'),
+        business: { name: 'Beta Bar' },
+      },
+    ];
+
+    const mockTopBizRaw = [
+      { business_id: BUSINESS_ID, _count: { business_id: 5 } },
+      { business_id: BIZ_2, _count: { business_id: 3 } },
+      { business_id: BIZ_3, _count: { business_id: 1 } },
+    ];
+
+    const mockBizNames = [
+      { business_id: BUSINESS_ID, name: 'Alpha Café' },
+      { business_id: BIZ_2, name: 'Beta Bar' },
+      { business_id: BIZ_3, name: 'Gamma Grill' },
+    ];
+
+    function setupDashboard({
+      total = 8,
+      byStatus = mockByStatusRaw,
+      recent = mockRecentReviews,
+      topBiz = mockTopBizRaw,
+      bizNames = mockBizNames,
+    } = {}) {
+      prisma.review.count.mockResolvedValue(total);
+      prisma.review.groupBy
+        .mockResolvedValueOnce(byStatus)
+        .mockResolvedValueOnce(topBiz);
+      prisma.review.findMany.mockResolvedValue(recent);
+      prisma.business.findMany.mockResolvedValue(bizNames);
+    }
+
+    it('returns total_reviews from the review count query', async () => {
+      setupDashboard({ total: 8 });
+
+      const result = await service.getDashboard(USER_ID);
+
+      expect(result.total_reviews).toBe(8);
+    });
+
+    it('returns correct counts per status and 0 for statuses with no reviews', async () => {
+      setupDashboard();
+
+      const result = await service.getDashboard(USER_ID);
+
+      expect(result.by_status).toEqual({
+        draft: 2,
+        pending: 1,
+        published: 5,
+        simulated: 0,
+      });
+    });
+
+    it('maps recent_reviews to flat shape with business_name included', async () => {
+      setupDashboard();
+
+      const result = await service.getDashboard(USER_ID);
+
+      expect(result.recent_reviews[0]).toEqual({
+        review_id: 'r1',
+        business_name: 'Alpha Café',
+        rating: 5,
+        status: 'published',
+        created_at: new Date('2024-03-01'),
+      });
+      expect(prisma.review.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          take: 5,
+          orderBy: { created_at: 'desc' },
+        }),
+      );
+    });
+
+    it('returns top 3 businesses ranked by review count with resolved names', async () => {
+      setupDashboard();
+
+      const result = await service.getDashboard(USER_ID);
+
+      expect(result.top_businesses).toHaveLength(3);
+      expect(result.top_businesses[0]).toEqual({
+        business_id: BUSINESS_ID,
+        name: 'Alpha Café',
+        review_count: 5,
+      });
+      expect(result.top_businesses[1]).toEqual({
+        business_id: BIZ_2,
+        name: 'Beta Bar',
+        review_count: 3,
+      });
+    });
+  });
+
+  // ── getStats ─────────────────────────────────────────────────────────────────
+
+  describe('getStats', () => {
+    function setupStats({
+      avg = 4.167,
+      thisMonth = 5,
+      lastMonth = 8,
+      languages = [
+        { language: 'fr', _count: { language: 12 } },
+        { language: 'en', _count: { language: 5 } },
+      ],
+      category = [{ business_type: 'restaurant' }],
+    } = {}) {
+      prisma.review.aggregate.mockResolvedValue({ _avg: { rating: avg } });
+      prisma.review.count
+        .mockResolvedValueOnce(thisMonth)
+        .mockResolvedValueOnce(lastMonth);
+      prisma.review.groupBy.mockResolvedValue(languages);
+      prisma.$queryRaw.mockResolvedValue(category);
+    }
+
+    it('returns average_rating rounded to 2 decimal places', async () => {
+      setupStats({ avg: 4.167 });
+
+      const result = await service.getStats(USER_ID);
+
+      expect(result.average_rating).toBe(4.17);
+    });
+
+    it('returns null for average_rating when the user has no reviews', async () => {
+      setupStats({ avg: null as unknown as number });
+
+      const result = await service.getStats(USER_ID);
+
+      expect(result.average_rating).toBeNull();
+    });
+
+    it('returns this_month and last_month review counts', async () => {
+      setupStats({ thisMonth: 5, lastMonth: 8 });
+
+      const result = await service.getStats(USER_ID);
+
+      expect(result.this_month).toBe(5);
+      expect(result.last_month).toBe(8);
+    });
+
+    it('returns languages as a count-per-code object', async () => {
+      setupStats({
+        languages: [
+          { language: 'fr', _count: { language: 12 } },
+          { language: 'en', _count: { language: 5 } },
+        ],
+      });
+
+      const result = await service.getStats(USER_ID);
+
+      expect(result.languages).toEqual({ fr: 12, en: 5 });
+    });
+
+    it('skips null language entries in the languages map', async () => {
+      setupStats({
+        languages: [
+          { language: 'fr', _count: { language: 12 } },
+          { language: null, _count: { language: 3 } },
+        ],
+      });
+
+      const result = await service.getStats(USER_ID);
+
+      expect(result.languages).toEqual({ fr: 12 });
+    });
+
+    it('returns most_reviewed_category from the raw query result', async () => {
+      setupStats({ category: [{ business_type: 'restaurant' }] });
+
+      const result = await service.getStats(USER_ID);
+
+      expect(result.most_reviewed_category).toBe('restaurant');
+    });
+
+    it('returns null for most_reviewed_category when no business type data exists', async () => {
+      setupStats({ category: [] });
+
+      const result = await service.getStats(USER_ID);
+
+      expect(result.most_reviewed_category).toBeNull();
     });
   });
 
@@ -242,11 +554,411 @@ describe('ReviewsService', () => {
       expect(result).toEqual({ message: 'Review deleted successfully' });
     });
 
-    it('throws ForbiddenException when trying to delete another user\'s review', async () => {
+    it("throws ForbiddenException when trying to delete another user's review", async () => {
       prisma.review.findFirst.mockResolvedValue({ ...mockReview, user_id: OTHER_USER_ID });
 
       await expect(service.remove(USER_ID, REVIEW_ID)).rejects.toThrow(ForbiddenException);
       expect(prisma.review.update).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── publish ──────────────────────────────────────────────────────────────────
+
+  describe('publish', () => {
+    const mockNetwork = {
+      network_id: NETWORK_ID,
+      name: 'Google',
+      preferences: { supports_api_posting: true },
+    };
+    const mockNetwork2 = {
+      network_id: NETWORK_ID_2,
+      name: 'TripAdvisor',
+      preferences: { supports_api_posting: true },
+    };
+    const mockDraft = {
+      draft_id: 'draft-uuid-1',
+      review_id: REVIEW_ID,
+      network_id: NETWORK_ID,
+      draft_text: 'Great place!',
+      is_selected: true,
+    };
+    const mockAccount = { account_id: ACCOUNT_ID, user_id: USER_ID, network_id: NETWORK_ID };
+    const mockPost = { post_id: POST_ID, review_id: REVIEW_ID, network_id: NETWORK_ID };
+
+    it('queues jobs for 2 platforms and returns both in queued[]', async () => {
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.network.findUnique
+        .mockResolvedValueOnce(mockNetwork)
+        .mockResolvedValueOnce(mockNetwork2);
+      prisma.reviewDraft.findFirst
+        .mockResolvedValueOnce(mockDraft)
+        .mockResolvedValueOnce({ ...mockDraft, network_id: NETWORK_ID_2 });
+      prisma.userPlatformAccount.findFirst.mockResolvedValue(mockAccount);
+      prisma.reviewPlatformPost.create
+        .mockResolvedValueOnce(mockPost)
+        .mockResolvedValueOnce({ ...mockPost, post_id: 'post-uuid-2' });
+      mockQueue.add.mockResolvedValue({});
+
+      const result = await service.publish(USER_ID, REVIEW_ID, {
+        platform_ids: [NETWORK_ID, NETWORK_ID_2],
+      });
+
+      expect(mockQueue.add).toHaveBeenCalledTimes(2);
+      expect(result.queued).toEqual(['Google', 'TripAdvisor']);
+      expect(result.skipped).toHaveLength(0);
+    });
+
+    it('skips a platform when no selected draft exists', async () => {
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.network.findUnique.mockResolvedValue(mockNetwork);
+      prisma.reviewDraft.findFirst.mockResolvedValue(null);
+
+      const result = await service.publish(USER_ID, REVIEW_ID, {
+        platform_ids: [NETWORK_ID],
+      });
+
+      expect(mockQueue.add).not.toHaveBeenCalled();
+      expect(result.queued).toHaveLength(0);
+      expect(result.skipped).toEqual([
+        { network: 'Google', reason: 'No selected draft for this platform' },
+      ]);
+    });
+
+    it('skips a platform when supports_api_posting is false', async () => {
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.network.findUnique.mockResolvedValue({
+        ...mockNetwork,
+        preferences: { supports_api_posting: false },
+      });
+      prisma.reviewDraft.findFirst.mockResolvedValue(mockDraft);
+
+      const result = await service.publish(USER_ID, REVIEW_ID, {
+        platform_ids: [NETWORK_ID],
+      });
+
+      expect(mockQueue.add).not.toHaveBeenCalled();
+      expect(result.skipped).toEqual([
+        { network: 'Google', reason: 'Platform does not support API posting' },
+      ]);
+    });
+
+    it('throws ForbiddenException when the review belongs to another user', async () => {
+      prisma.review.findFirst.mockResolvedValue({ ...mockReview, user_id: OTHER_USER_ID });
+
+      await expect(
+        service.publish(USER_ID, REVIEW_ID, { platform_ids: [NETWORK_ID] }),
+      ).rejects.toThrow(ForbiddenException);
+
+      expect(mockQueue.add).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── retryFailed ──────────────────────────────────────────────────────────────
+
+  describe('retryFailed', () => {
+    const mockFailedPost = {
+      post_id: POST_ID,
+      review_id: REVIEW_ID,
+      network_id: NETWORK_ID,
+      status: 'failed',
+      platform_specific_text: 'Great place!',
+      listing_id: LISTING_ID,
+      network: { name: 'Google' },
+    };
+
+    it('re-queues failed posts and increments retry_count', async () => {
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.reviewPlatformPost.findMany.mockResolvedValue([mockFailedPost]);
+      prisma.reviewDraft.findFirst.mockResolvedValue({
+        draft_text: 'Great place!',
+        is_selected: true,
+      });
+      prisma.reviewPlatformPost.update.mockResolvedValue({});
+      mockQueue.add.mockResolvedValue({});
+
+      const result = await service.retryFailed(USER_ID, REVIEW_ID);
+
+      expect(prisma.reviewPlatformPost.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { post_id: POST_ID },
+          data: expect.objectContaining({ retry_count: { increment: 1 }, status: 'queued' }),
+        }),
+      );
+      expect(mockQueue.add).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ retried: 1 });
+    });
+
+    it('throws BadRequestException when no failed posts exist', async () => {
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.reviewPlatformPost.findMany.mockResolvedValue([]);
+
+      await expect(service.retryFailed(USER_ID, REVIEW_ID)).rejects.toThrow(BadRequestException);
+      expect(mockQueue.add).not.toHaveBeenCalled();
+    });
+
+    it('throws ForbiddenException when the review belongs to another user', async () => {
+      prisma.review.findFirst.mockResolvedValue({ ...mockReview, user_id: OTHER_USER_ID });
+
+      await expect(service.retryFailed(USER_ID, REVIEW_ID)).rejects.toThrow(ForbiddenException);
+      expect(mockQueue.add).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── getPosts ─────────────────────────────────────────────────────────────────
+
+  describe('getPosts', () => {
+    it('throws ForbiddenException when the review belongs to another user', async () => {
+      prisma.review.findFirst.mockResolvedValue({ ...mockReview, user_id: OTHER_USER_ID });
+
+      await expect(service.getPosts(USER_ID, REVIEW_ID)).rejects.toThrow(ForbiddenException);
+      expect(prisma.reviewPlatformPost.findMany).not.toHaveBeenCalled();
+    });
+
+    it('returns the correct shape for each platform post', async () => {
+      const postedAt = new Date('2024-06-01T12:00:00Z');
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.reviewPlatformPost.findMany.mockResolvedValue([
+        {
+          post_id: POST_ID,
+          network: { name: 'Google' },
+          status: 'simulated',
+          posted_at: postedAt,
+          external_review_id: 'SIMULATED-abc123',
+          retry_count: 0,
+          error_message: null,
+        },
+      ]);
+
+      const result = await service.getPosts(USER_ID, REVIEW_ID);
+
+      expect(result).toEqual([
+        {
+          platform: 'Google',
+          status: 'simulated',
+          posted_at: postedAt,
+          external_review_id: 'SIMULATED-abc123',
+          retry_count: 0,
+          error_message: null,
+        },
+      ]);
+    });
+  });
+
+  // ── transcribeAudio ───────────────────────────────────────────────────────────
+
+  describe('transcribeAudio', () => {
+    const audioBuffer = Buffer.from('fake-audio');
+    const language = 'fr';
+    const mimetype = 'audio/webm';
+
+    it('calls AiService.transcribeAudio and updates review_text and language', async () => {
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      aiService.transcribeAudio.mockResolvedValue({ transcript: 'Great place!', detected_language: 'en' });
+      prisma.review.update.mockResolvedValue({});
+
+      const result = await service.transcribeAudio(USER_ID, REVIEW_ID, audioBuffer, language, mimetype);
+
+      expect(aiService.transcribeAudio).toHaveBeenCalledWith(audioBuffer, language, mimetype, USER_ID);
+      expect(prisma.review.update).toHaveBeenCalledWith({
+        where: { review_id: REVIEW_ID },
+        data: { review_text: 'Great place!', language: 'en' },
+      });
+      expect(result).toEqual({ transcript: 'Great place!', detected_language: 'en', review_id: REVIEW_ID });
+    });
+
+    it('throws ForbiddenException when the review belongs to another user', async () => {
+      prisma.review.findFirst.mockResolvedValue({ ...mockReview, user_id: OTHER_USER_ID });
+
+      await expect(
+        service.transcribeAudio(USER_ID, REVIEW_ID, audioBuffer, language, mimetype),
+      ).rejects.toThrow(ForbiddenException);
+      expect(aiService.transcribeAudio).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── startChat ─────────────────────────────────────────────────────────────────
+
+  describe('startChat', () => {
+    const mockListingWithNetwork = {
+      listing_id: LISTING_ID,
+      business_id: BUSINESS_ID,
+      is_active: true,
+      network: {
+        name: 'Google',
+        preferences: { max_chars_post: 300, supports_api_posting: true },
+      },
+    };
+
+    it('builds correct listingContext and stores session_id on the review', async () => {
+      prisma.review.findFirst.mockResolvedValue({ ...mockReview, business: { name: 'Test Business' } });
+      prisma.listing.findMany.mockResolvedValue([mockListingWithNetwork]);
+      aiService.startChat.mockResolvedValue({
+        session_id: 'session-123',
+        initial_response: 'Hello!',
+        detected_language: 'en',
+      });
+      prisma.review.update.mockResolvedValue({});
+
+      const result = await service.startChat(USER_ID, REVIEW_ID);
+
+      expect(aiService.startChat).toHaveBeenCalledWith(
+        REVIEW_ID,
+        mockReview.review_text,
+        LISTING_ID,
+        mockReview.language,
+        expect.objectContaining({
+          business_name: 'Test Business',
+          networks: expect.arrayContaining([
+            expect.objectContaining({ name: 'Google', max_chars: 300, supports_api_posting: true }),
+          ]),
+        }),
+        USER_ID,
+      );
+      expect(prisma.review.update).toHaveBeenCalledWith({
+        where: { review_id: REVIEW_ID },
+        data: { ai_session_id: 'session-123' },
+      });
+      expect(result).toMatchObject({ session_id: 'session-123', review_id: REVIEW_ID });
+    });
+
+    it('throws ForbiddenException when the review belongs to another user', async () => {
+      prisma.review.findFirst.mockResolvedValue({
+        ...mockReview,
+        user_id: OTHER_USER_ID,
+        business: { name: 'Test Business' },
+      });
+
+      await expect(service.startChat(USER_ID, REVIEW_ID)).rejects.toThrow(ForbiddenException);
+      expect(aiService.startChat).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── sendMessage ───────────────────────────────────────────────────────────────
+
+  describe('sendMessage', () => {
+    it('throws BadRequestException when ai_session_id is null', async () => {
+      prisma.review.findFirst.mockResolvedValue({ ...mockReview, ai_session_id: null });
+
+      await expect(service.sendMessage(USER_ID, REVIEW_ID, 'Hello')).rejects.toThrow(BadRequestException);
+      expect(aiService.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('calls AiService.sendMessage with the stored session_id', async () => {
+      prisma.review.findFirst.mockResolvedValue({ ...mockReview, ai_session_id: 'session-123' });
+      aiService.sendMessage.mockResolvedValue({ response: 'Sure!', session_id: 'session-123' });
+
+      const result = await service.sendMessage(USER_ID, REVIEW_ID, 'Make it shorter');
+
+      expect(aiService.sendMessage).toHaveBeenCalledWith('session-123', 'Make it shorter', USER_ID);
+      expect(result).toEqual({ response: 'Sure!', session_id: 'session-123' });
+    });
+  });
+
+  // ── approveDraft ──────────────────────────────────────────────────────────────
+
+  describe('approveDraft', () => {
+    const mockApproveResult = {
+      improved_text: 'Excellent place!',
+      rating: 5,
+      sentiment: 'positive',
+      tone: 'friendly',
+      key_points: ['great service'],
+    };
+
+    it('updates review fields, selected drafts, ends session and clears ai_session_id', async () => {
+      prisma.review.findFirst.mockResolvedValue({ ...mockReview, ai_session_id: 'session-123' });
+      aiService.approveDraft.mockResolvedValue(mockApproveResult);
+      prisma.review.update.mockResolvedValue({});
+      prisma.reviewDraft.updateMany.mockResolvedValue({ count: 1 });
+      aiService.endSession.mockResolvedValue({ success: true });
+
+      const result = await service.approveDraft(USER_ID, REVIEW_ID);
+
+      expect(prisma.review.update).toHaveBeenCalledWith({
+        where: { review_id: REVIEW_ID },
+        data: {
+          review_text: 'Excellent place!',
+          rating: 5,
+          tone: 'friendly',
+          status: 'pending',
+          ai_session_id: null,
+        },
+      });
+      expect(prisma.reviewDraft.updateMany).toHaveBeenCalledWith({
+        where: { review_id: REVIEW_ID, is_selected: true },
+        data: { draft_text: 'Excellent place!' },
+      });
+      expect(aiService.endSession).toHaveBeenCalledWith('session-123', USER_ID);
+      expect(result).toMatchObject({ ...mockApproveResult, review_id: REVIEW_ID });
+    });
+
+    it('throws ForbiddenException when the review belongs to another user', async () => {
+      prisma.review.findFirst.mockResolvedValue({
+        ...mockReview,
+        user_id: OTHER_USER_ID,
+        ai_session_id: 'session-123',
+      });
+
+      await expect(service.approveDraft(USER_ID, REVIEW_ID)).rejects.toThrow(ForbiddenException);
+      expect(aiService.approveDraft).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── getDrafts ─────────────────────────────────────────────────────────────────
+
+  describe('getDrafts', () => {
+    it('returns correct shape with network name', async () => {
+      const createdAt = new Date('2024-06-01T00:00:00Z');
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.reviewDraft.findMany.mockResolvedValue([
+        {
+          draft_id: 'draft-uuid-1',
+          review_id: REVIEW_ID,
+          network_id: NETWORK_ID,
+          version: 1,
+          draft_text: 'Great place!',
+          compliance_check: true,
+          is_selected: true,
+          created_at: createdAt,
+          network: { name: 'Google' },
+        },
+      ]);
+
+      const result = await service.getDrafts(USER_ID, REVIEW_ID);
+
+      expect(result).toEqual([
+        {
+          draft_id: 'draft-uuid-1',
+          network: 'Google',
+          draft_text: 'Great place!',
+          version: 1,
+          compliance_check: true,
+          is_selected: true,
+          created_at: createdAt,
+        },
+      ]);
+    });
+
+    it('returns null for network when draft has no network', async () => {
+      const createdAt = new Date();
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.reviewDraft.findMany.mockResolvedValue([
+        {
+          draft_id: 'draft-uuid-2',
+          review_id: REVIEW_ID,
+          network_id: null,
+          version: 1,
+          draft_text: 'Generic draft',
+          compliance_check: true,
+          is_selected: false,
+          created_at: createdAt,
+          network: null,
+        },
+      ]);
+
+      const result = await service.getDrafts(USER_ID, REVIEW_ID);
+
+      expect(result[0].network).toBeNull();
     });
   });
 });

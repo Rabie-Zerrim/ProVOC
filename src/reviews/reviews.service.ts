@@ -2,15 +2,28 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
+  BadRequestException,
 } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
+import { AiService } from '../ai/ai.service';
 import { CreateReviewDto } from './dto/create-review.dto';
 import { UpdateReviewDto } from './dto/update-review.dto';
 import { QueryReviewsDto } from './dto/query-reviews.dto';
+import { PublishReviewDto } from './dto/publish-review.dto';
+import { POSTING_QUEUE, PostingJobData } from './posting.constants';
+
+const REVIEW_STATUSES = ['draft', 'pending', 'published', 'simulated'] as const;
+type ReviewStatus = (typeof REVIEW_STATUSES)[number];
 
 @Injectable()
 export class ReviewsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @InjectQueue(POSTING_QUEUE) private readonly postingQueue: Queue,
+    private readonly aiService: AiService,
+  ) {}
 
   async create(userId: string, dto: CreateReviewDto) {
     const listing = await this.prisma.listing.findUnique({
@@ -37,8 +50,21 @@ export class ReviewsService {
   }
 
   async findAll(userId: string, query: QueryReviewsDto) {
-    const { status, listing_id, date_from, date_to, page = 1, limit = 10 } = query;
-    const skip = (page - 1) * limit;
+    const {
+      status,
+      listing_id,
+      business_id,
+      date_from,
+      date_to,
+      search,
+      sort_by = 'created_at',
+      sort_order = 'desc',
+      page = 1,
+      limit = 10,
+    } = query;
+
+    const safeLimit = Math.min(limit, 50);
+    const skip = (page - 1) * safeLimit;
 
     const where: Record<string, unknown> = {
       user_id: userId,
@@ -47,6 +73,8 @@ export class ReviewsService {
 
     if (status) where.status = status;
     if (listing_id) where.listing_id = listing_id;
+    if (business_id) where.business_id = business_id;
+    if (search) where.review_text = { contains: search, mode: 'insensitive' };
     if (date_from || date_to) {
       where.created_at = {
         ...(date_from ? { gte: new Date(date_from) } : {}),
@@ -54,15 +82,29 @@ export class ReviewsService {
       };
     }
 
+    const validSortFields = ['created_at', 'rating', 'updated_at'];
+    const sortField = validSortFields.includes(sort_by) ? sort_by : 'created_at';
+    const sortDirection = sort_order === 'asc' ? 'asc' : 'desc';
+
     const [data, total] = await Promise.all([
       this.prisma.review.findMany({
         where,
         skip,
-        take: limit,
-        orderBy: { created_at: 'desc' },
-        include: {
+        take: safeLimit,
+        orderBy: { [sortField]: sortDirection },
+        select: {
+          review_id: true,
+          business_id: true,
+          listing_id: true,
+          review_text: true,
+          rating: true,
+          status: true,
+          tone: true,
+          language: true,
+          created_at: true,
+          updated_at: true,
           business: { select: { name: true } },
-          listing: { select: { external_url: true } },
+          listing: { select: { listing_id: true, external_url: true } },
         },
       }),
       this.prisma.review.count({ where }),
@@ -73,9 +115,133 @@ export class ReviewsService {
       meta: {
         total,
         page,
-        limit,
-        last_page: Math.ceil(total / limit),
+        limit: safeLimit,
+        total_pages: Math.ceil(total / safeLimit),
       },
+    };
+  }
+
+  async getDashboard(userId: string) {
+    const baseWhere = { user_id: userId, deleted_at: null };
+
+    const [total_reviews, by_status_raw, recent_reviews, top_businesses_raw] =
+      await Promise.all([
+        this.prisma.review.count({ where: baseWhere }),
+        this.prisma.review.groupBy({
+          by: ['status'],
+          where: baseWhere,
+          _count: { status: true },
+        }),
+        this.prisma.review.findMany({
+          where: baseWhere,
+          orderBy: { created_at: 'desc' },
+          take: 5,
+          select: {
+            review_id: true,
+            rating: true,
+            status: true,
+            created_at: true,
+            business: { select: { name: true } },
+          },
+        }),
+        this.prisma.review.groupBy({
+          by: ['business_id'],
+          where: baseWhere,
+          _count: { business_id: true },
+          orderBy: { _count: { business_id: 'desc' } },
+          take: 3,
+        }),
+      ]);
+
+    const by_status = Object.fromEntries(
+      REVIEW_STATUSES.map((s) => [
+        s,
+        by_status_raw.find((r) => r.status === s)?._count.status ?? 0,
+      ]),
+    ) as Record<ReviewStatus, number>;
+
+    const topBusinessIds = top_businesses_raw.map((b) => b.business_id);
+    const businesses = await this.prisma.business.findMany({
+      where: { business_id: { in: topBusinessIds } },
+      select: { business_id: true, name: true },
+    });
+    const businessMap = new Map(businesses.map((b) => [b.business_id, b.name]));
+
+    return {
+      total_reviews,
+      by_status,
+      recent_reviews: recent_reviews.map((r) => ({
+        review_id: r.review_id,
+        business_name: r.business.name,
+        rating: r.rating,
+        status: r.status,
+        created_at: r.created_at,
+      })),
+      top_businesses: top_businesses_raw.map((b) => ({
+        business_id: b.business_id,
+        name: businessMap.get(b.business_id) ?? '',
+        review_count: b._count.business_id,
+      })),
+    };
+  }
+
+  async getStats(userId: string) {
+    const now = new Date();
+    const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const lastMonthEnd = thisMonthStart;
+
+    const baseWhere = { user_id: userId, deleted_at: null };
+
+    const [avgResult, thisMonth, lastMonth, languageGroups, categoryResult] =
+      await Promise.all([
+        this.prisma.review.aggregate({
+          where: baseWhere,
+          _avg: { rating: true },
+        }),
+        this.prisma.review.count({
+          where: { ...baseWhere, created_at: { gte: thisMonthStart } },
+        }),
+        this.prisma.review.count({
+          where: {
+            ...baseWhere,
+            created_at: { gte: lastMonthStart, lt: lastMonthEnd },
+          },
+        }),
+        this.prisma.review.groupBy({
+          by: ['language'],
+          where: baseWhere,
+          _count: { language: true },
+        }),
+        this.prisma.$queryRaw<Array<{ business_type: string }>>`
+          SELECT b.business_type
+          FROM reviews r
+          JOIN businesses b ON r.business_id = b.business_id
+          WHERE r.user_id = ${userId}::uuid
+            AND r.deleted_at IS NULL
+            AND b.business_type IS NOT NULL
+          GROUP BY b.business_type
+          ORDER BY COUNT(*) DESC
+          LIMIT 1
+        `,
+      ]);
+
+    const languages: Record<string, number> = {};
+    for (const group of languageGroups) {
+      if (group.language) {
+        languages[group.language] = group._count.language;
+      }
+    }
+
+    const raw = avgResult._avg.rating;
+    const average_rating = raw !== null ? Math.round(raw * 100) / 100 : null;
+
+    return {
+      average_rating,
+      most_reviewed_category: categoryResult[0]?.business_type ?? null,
+      this_month: thisMonth,
+      last_month: lastMonth,
+      languages,
     };
   }
 
@@ -133,5 +299,279 @@ export class ReviewsService {
     });
 
     return { message: 'Review deleted successfully' };
+  }
+
+  async publish(userId: string, reviewId: string, dto: PublishReviewDto) {
+    const review = await this.prisma.review.findFirst({
+      where: { review_id: reviewId, deleted_at: null },
+    });
+    if (!review) throw new NotFoundException(`Review ${reviewId} not found`);
+    if (review.user_id !== userId) throw new ForbiddenException('Access denied');
+
+    const queued: string[] = [];
+    const skipped: { network: string; reason: string }[] = [];
+
+    for (const networkId of dto.platform_ids) {
+      const network = await this.prisma.network.findUnique({
+        where: { network_id: networkId },
+        include: { preferences: true },
+      });
+
+      if (!network) {
+        skipped.push({ network: networkId, reason: 'Network not found' });
+        continue;
+      }
+
+      const draft = await this.prisma.reviewDraft.findFirst({
+        where: { review_id: reviewId, network_id: networkId, is_selected: true },
+      });
+      if (!draft) {
+        skipped.push({ network: network.name, reason: 'No selected draft for this platform' });
+        continue;
+      }
+
+      if (!network.preferences?.supports_api_posting) {
+        skipped.push({ network: network.name, reason: 'Platform does not support API posting' });
+        continue;
+      }
+
+      let account = await this.prisma.userPlatformAccount.findFirst({
+        where: { user_id: userId, network_id: networkId, is_active: true },
+      });
+      if (!account) {
+        account = await this.prisma.userPlatformAccount.create({
+          data: { user_id: userId, network_id: networkId, is_active: false },
+        });
+      }
+
+      const post = await this.prisma.reviewPlatformPost.create({
+        data: {
+          review_id: reviewId,
+          network_id: networkId,
+          listing_id: review.listing_id,
+          user_platform_account_id: account.account_id,
+          status: 'queued',
+          platform_specific_text: draft.draft_text,
+          retry_count: 0,
+        },
+      });
+
+      await this.postingQueue.add(
+        'post-review',
+        {
+          post_id: post.post_id,
+          review_id: reviewId,
+          network_id: networkId,
+          network_name: network.name,
+          draft_text: draft.draft_text,
+          user_id: userId,
+          listing_id: review.listing_id,
+        } as PostingJobData,
+        { attempts: 3, backoff: { type: 'exponential', delay: 2000 } },
+      );
+
+      queued.push(network.name);
+    }
+
+    return { queued, skipped };
+  }
+
+  async retryFailed(userId: string, reviewId: string) {
+    const review = await this.prisma.review.findFirst({
+      where: { review_id: reviewId, deleted_at: null },
+    });
+    if (!review) throw new NotFoundException(`Review ${reviewId} not found`);
+    if (review.user_id !== userId) throw new ForbiddenException('Access denied');
+
+    const failedPosts = await this.prisma.reviewPlatformPost.findMany({
+      where: { review_id: reviewId, status: 'failed' },
+      include: { network: true },
+    });
+
+    if (failedPosts.length === 0) {
+      throw new BadRequestException('No failed posts found for this review');
+    }
+
+    for (const post of failedPosts) {
+      const draft = await this.prisma.reviewDraft.findFirst({
+        where: { review_id: reviewId, network_id: post.network_id, is_selected: true },
+      });
+
+      await this.prisma.reviewPlatformPost.update({
+        where: { post_id: post.post_id },
+        data: { retry_count: { increment: 1 }, status: 'queued' },
+      });
+
+      await this.postingQueue.add(
+        'post-review',
+        {
+          post_id: post.post_id,
+          review_id: reviewId,
+          network_id: post.network_id,
+          network_name: post.network.name,
+          draft_text: draft?.draft_text ?? post.platform_specific_text ?? '',
+          user_id: userId,
+          listing_id: post.listing_id,
+        } as PostingJobData,
+        { attempts: 3, backoff: { type: 'exponential', delay: 2000 } },
+      );
+    }
+
+    return { retried: failedPosts.length };
+  }
+
+  async getPosts(userId: string, reviewId: string) {
+    const review = await this.prisma.review.findFirst({
+      where: { review_id: reviewId, deleted_at: null },
+    });
+    if (!review) throw new NotFoundException(`Review ${reviewId} not found`);
+    if (review.user_id !== userId) throw new ForbiddenException('Access denied');
+
+    const posts = await this.prisma.reviewPlatformPost.findMany({
+      where: { review_id: reviewId },
+      include: { network: { select: { name: true } } },
+    });
+
+    return posts.map((p) => ({
+      platform: p.network.name,
+      status: p.status,
+      posted_at: p.posted_at,
+      external_review_id: p.external_review_id,
+      retry_count: p.retry_count,
+      error_message: p.error_message,
+    }));
+  }
+
+  async transcribeAudio(
+    userId: string,
+    reviewId: string,
+    audioBuffer: Buffer,
+    language: string,
+    mimetype: string,
+  ) {
+    const review = await this.prisma.review.findFirst({
+      where: { review_id: reviewId, deleted_at: null },
+    });
+    if (!review) throw new NotFoundException(`Review ${reviewId} not found`);
+    if (review.user_id !== userId) throw new ForbiddenException('Access denied');
+
+    const result = await this.aiService.transcribeAudio(audioBuffer, language, mimetype, userId);
+
+    await this.prisma.review.update({
+      where: { review_id: reviewId },
+      data: { review_text: result.transcript, language: result.detected_language },
+    });
+
+    return { transcript: result.transcript, detected_language: result.detected_language, review_id: reviewId };
+  }
+
+  async startChat(userId: string, reviewId: string) {
+    const review = await this.prisma.review.findFirst({
+      where: { review_id: reviewId, deleted_at: null },
+      include: {
+        business: { select: { name: true } },
+      },
+    });
+    if (!review) throw new NotFoundException(`Review ${reviewId} not found`);
+    if (review.user_id !== userId) throw new ForbiddenException('Access denied');
+
+    const allListings = await this.prisma.listing.findMany({
+      where: { business_id: review.business_id, is_active: true },
+      include: {
+        network: { include: { preferences: true } },
+      },
+    });
+
+    const listingContext = {
+      business_name: review.business.name,
+      networks: allListings.map((l) => ({
+        name: l.network.name,
+        max_chars: l.network.preferences?.max_chars_post ?? null,
+        supports_api_posting: l.network.preferences?.supports_api_posting ?? false,
+      })),
+    };
+
+    const result = await this.aiService.startChat(
+      reviewId,
+      review.review_text,
+      review.listing_id ?? '',
+      review.language ?? 'fr',
+      listingContext,
+      userId,
+    );
+
+    await this.prisma.review.update({
+      where: { review_id: reviewId },
+      data: { ai_session_id: result.session_id },
+    });
+
+    return { ...result, review_id: reviewId };
+  }
+
+  async sendMessage(userId: string, reviewId: string, message: string) {
+    const review = await this.prisma.review.findFirst({
+      where: { review_id: reviewId, deleted_at: null },
+    });
+    if (!review) throw new NotFoundException(`Review ${reviewId} not found`);
+    if (review.user_id !== userId) throw new ForbiddenException('Access denied');
+    if (!review.ai_session_id) throw new BadRequestException('No active AI session for this review');
+
+    return this.aiService.sendMessage(review.ai_session_id, message, userId);
+  }
+
+  async approveDraft(userId: string, reviewId: string) {
+    const review = await this.prisma.review.findFirst({
+      where: { review_id: reviewId, deleted_at: null },
+    });
+    if (!review) throw new NotFoundException(`Review ${reviewId} not found`);
+    if (review.user_id !== userId) throw new ForbiddenException('Access denied');
+    if (!review.ai_session_id) throw new BadRequestException('No active AI session for this review');
+
+    const sessionId = review.ai_session_id;
+    const result = await this.aiService.approveDraft(sessionId, userId);
+
+    await this.prisma.review.update({
+      where: { review_id: reviewId },
+      data: {
+        review_text: result.improved_text,
+        rating: result.rating,
+        tone: result.tone,
+        status: 'pending',
+        ai_session_id: null,
+      },
+    });
+
+    await this.prisma.reviewDraft.updateMany({
+      where: { review_id: reviewId, is_selected: true },
+      data: { draft_text: result.improved_text },
+    });
+
+    await this.aiService.endSession(sessionId, userId);
+
+    return { ...result, review_id: reviewId };
+  }
+
+  async getDrafts(userId: string, reviewId: string) {
+    const review = await this.prisma.review.findFirst({
+      where: { review_id: reviewId, deleted_at: null },
+    });
+    if (!review) throw new NotFoundException(`Review ${reviewId} not found`);
+    if (review.user_id !== userId) throw new ForbiddenException('Access denied');
+
+    const drafts = await this.prisma.reviewDraft.findMany({
+      where: { review_id: reviewId },
+      include: { network: { select: { name: true } } },
+      orderBy: { created_at: 'asc' },
+    });
+
+    return drafts.map((d) => ({
+      draft_id: d.draft_id,
+      network: d.network?.name ?? null,
+      draft_text: d.draft_text,
+      version: d.version,
+      compliance_check: d.compliance_check,
+      is_selected: d.is_selected,
+      created_at: d.created_at,
+    }));
   }
 }

@@ -255,6 +255,7 @@ model Review {
   tone           String?
   intent         String?
   language       String?              @db.VarChar(10)
+  ai_session_id  String?
   created_at     DateTime             @default(now())
   updated_at     DateTime             @updatedAt
   deleted_at     DateTime?
@@ -266,6 +267,10 @@ model Review {
   listing        Listing?             @relation(fields: [listing_id], references: [listing_id])
   user           User                 @relation(fields: [user_id], references: [user_id])
 
+  @@index([user_id])
+  @@index([status])
+  @@index([created_at])
+  @@index([listing_id])
   @@map("reviews")
 }
 
