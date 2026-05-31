@@ -2,6 +2,7 @@
 builder = "dockerfile"
 
 [deploy]
+startCommand = "npx prisma migrate deploy && node dist/main"
 healthcheckPath = "/"
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"
