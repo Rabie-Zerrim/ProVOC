@@ -22,12 +22,17 @@ import { NetworksModule } from './networks/networks.module';
         const redisUrl = configService.get<string>('REDIS_URL');
         if (redisUrl) {
           const url = new URL(redisUrl);
+          const isTls = url.protocol === 'rediss:';
           return {
             connection: {
               host: url.hostname,
               port: parseInt(url.port, 10),
               password: url.password || undefined,
               username: url.username || undefined,
+              tls: isTls ? {} : undefined,
+              maxRetriesPerRequest: null,
+              enableReadyCheck: false,
+              family: 4,
             },
           };
         }
@@ -36,6 +41,8 @@ import { NetworksModule } from './networks/networks.module';
             host: configService.get<string>('REDIS_HOST', 'localhost'),
             port: configService.get<number>('REDIS_PORT', 6379),
             password: configService.get<string>('REDIS_PASSWORD'),
+            maxRetriesPerRequest: null,
+            enableReadyCheck: false,
           },
         };
       },
