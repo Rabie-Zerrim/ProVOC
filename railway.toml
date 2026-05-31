@@ -2,7 +2,7 @@
 builder = "dockerfile"
 
 [deploy]
-startCommand = "node -e \"const { execSync } = require('child_process'); try { execSync('npx prisma migrate deploy', {stdio: 'inherit'}); execSync('npx prisma db seed', {stdio: 'inherit'}); } catch(e) { console.error(e); }\" && node dist/main"
+startCommand = "node dist/main"
 healthcheckPath = "/health"
 healthcheckTimeout = 120
 restartPolicyType = "on_failure"
