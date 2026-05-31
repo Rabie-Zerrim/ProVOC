@@ -1,23 +1,16 @@
-FROM node:25.2.1-bookworm-slim as builder
-
-WORKDIR /provoc
-
+FROM node:18-alpine AS builder
+WORKDIR /app
 COPY package*.json ./
-
-RUN npm install
-
+COPY prisma ./prisma
+RUN npm ci
 COPY . .
-
-RUN npx prisma generate
-
 RUN npm run build
 
-FROM node:25.2.1-bookworm-slim
-
-WORKDIR /provoc
-
-COPY --from=builder /provoc .
-
+FROM node:18-alpine AS runner
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production --ignore-scripts
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 EXPOSE 3000
-
-CMD ["npm", "run", "start:dev"]
+CMD ["node", "dist/main"]
