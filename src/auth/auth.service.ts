@@ -42,6 +42,23 @@ export class AuthService {
 
     return {
       access_token: this.jwtService.sign(payload),
+      user: {
+        user_id: credential.user_id,
+        email: credential.email,
+        display_name: credential.user.display_name,
+      },
+    };
+  }
+
+  async me(userId: string) {
+    const credential = await this.prisma.userCredential.findUnique({
+      where: { user_id: userId },
+      include: { user: true },
+    });
+    return {
+      user_id: userId,
+      email: credential?.email ?? '',
+      display_name: credential?.user?.display_name ?? '',
     };
   }
 
@@ -79,6 +96,11 @@ export class AuthService {
 
     return {
       access_token: this.jwtService.sign(payload),
+      user: {
+        user_id: credential.user_id,
+        email: credential.email,
+        display_name: registerDto.display_name,
+      },
     };
   }
 }

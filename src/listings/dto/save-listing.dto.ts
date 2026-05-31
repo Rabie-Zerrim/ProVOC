@@ -32,6 +32,21 @@ export class SaveListingDto {
   @IsString()
   external_url?: string;
 
+  @ApiPropertyOptional({ example: 'google', description: 'Network slug (google, yelp, tripadvisor, facebook, trustpilot)' })
+  @IsOptional()
+  @IsString()
+  network?: string;
+
+  @ApiPropertyOptional({ example: 'google', description: 'Look up an existing network by slug (case-insensitive). Preferred over network when the network is already seeded.' })
+  @IsOptional()
+  @IsString()
+  network_slug?: string;
+
+  @ApiPropertyOptional({ description: 'Existing business UUID to attach this listing to instead of creating a new business' })
+  @IsOptional()
+  @IsString()
+  business_id?: string;
+
   @ApiPropertyOptional({ example: 48.8698 })
   @IsOptional()
   @IsNumber()

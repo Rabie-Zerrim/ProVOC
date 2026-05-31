@@ -31,53 +31,31 @@ describe('PostingWorker', () => {
       review: { update: jest.fn().mockResolvedValue({}) },
       notification: { create: jest.fn().mockResolvedValue({}) },
     };
+
+    global.fetch = jest.fn();
+
     worker = new PostingWorker(prisma as unknown as PrismaService);
   });
 
-  // ── process (success path) ───────────────────────────────────────────────────
+  // ── process ──────────────────────────────────────────────────────────────────
 
   describe('process', () => {
-    it('updates review_platform_posts with status "simulated", posted_at, and a SIMULATED- external_review_id', async () => {
-      await worker.process(makeJob(JOB_DATA));
-
-      expect(prisma.reviewPlatformPost.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { post_id: 'post-uuid-1' },
-          data: expect.objectContaining({
-            status: 'simulated',
-            platform_specific_text: 'Great place!',
-            posted_at: expect.any(Date),
-            external_review_id: expect.stringMatching(/^SIMULATED-/),
-          }),
-        }),
+    it('throws "No platforms currently support automatic posting"', async () => {
+      await expect(worker.process(makeJob(JOB_DATA))).rejects.toThrow(
+        'No platforms currently support automatic posting',
       );
     });
 
-    it('updates the parent review status to "published"', async () => {
-      await worker.process(makeJob(JOB_DATA));
-
-      expect(prisma.review.update).toHaveBeenCalledWith({
-        where: { review_id: 'review-uuid-1' },
-        data: { status: 'published' },
-      });
+    it('does not call any external API', async () => {
+      await worker.process(makeJob(JOB_DATA)).catch(() => {});
+      expect(global.fetch).not.toHaveBeenCalled();
     });
 
-    it('creates a notification row with correct fields after posting', async () => {
-      await worker.process(makeJob(JOB_DATA));
-
-      expect(prisma.notification.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            user_id: 'user-uuid-1',
-            type: 'posting',
-            category: 'review',
-            title: 'Review submitted',
-            body: 'Your review was submitted to Google',
-            is_sent: true,
-            sent_at: expect.any(Date),
-          }),
-        }),
-      );
+    it('does not write to the database when process throws', async () => {
+      await worker.process(makeJob(JOB_DATA)).catch(() => {});
+      expect(prisma.reviewPlatformPost.update).not.toHaveBeenCalled();
+      expect(prisma.review.update).not.toHaveBeenCalled();
+      expect(prisma.notification.create).not.toHaveBeenCalled();
     });
   });
 

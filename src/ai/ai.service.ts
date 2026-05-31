@@ -78,7 +78,11 @@ export class AiService {
     form.append('audio', audioBuffer, { contentType: mimetype, filename: 'audio' });
     form.append('language', language);
     const authHeaders = await this.getAuthHeaders(userId);
-    return this.post('/api/transcribe', form, { ...form.getHeaders(), ...authHeaders });
+    const raw = await this.post<any>('/api/transcribe', form, { ...form.getHeaders(), ...authHeaders });
+    return {
+      transcript: raw.transcription ?? raw.transcript ?? '',
+      detected_language: raw.language ?? raw.detected_language ?? language,
+    };
   }
 
   async startChat(
@@ -89,17 +93,14 @@ export class AiService {
     listingContext: object,
     userId: string,
   ): Promise<{ session_id: string; initial_response: string; detected_language: string }> {
-    return this.post(
-      '/api/chat/start',
-      {
-        review_id: reviewId,
-        transcript,
-        listing_id: listingId,
-        language,
-        listing_context: listingContext,
-      },
-      await this.getAuthHeaders(userId),
-    );
+    const body: Record<string, unknown> = {
+      review_id: reviewId,
+      transcript,
+      listing_id: listingId,
+      language,
+      listing_context: listingContext,
+    };
+    return this.post('/api/chat/start', body, await this.getAuthHeaders(userId));
   }
 
   async sendMessage(
@@ -114,13 +115,22 @@ export class AiService {
     sessionId: string,
     userId: string,
   ): Promise<{
-    improved_text: string;
+    review_text: string;
     rating: number;
     sentiment: string;
     tone: string;
     key_points: string[];
+    conversation_summary: string | null;
   }> {
-    return this.post('/api/chat/approve', { session_id: sessionId }, await this.getAuthHeaders(userId));
+    const data = await this.post<any>('/api/chat/approve', { session_id: sessionId }, await this.getAuthHeaders(userId));
+    return {
+      review_text: data.improved_text ?? data.review_text ?? '',
+      rating: data.rating,
+      sentiment: data.sentiment,
+      tone: data.tone,
+      key_points: data.key_points ?? [],
+      conversation_summary: data.conversation_summary ?? null,
+    };
   }
 
   async endSession(sessionId: string, userId: string): Promise<{ success: boolean }> {

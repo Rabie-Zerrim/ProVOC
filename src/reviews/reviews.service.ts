@@ -14,7 +14,7 @@ import { QueryReviewsDto } from './dto/query-reviews.dto';
 import { PublishReviewDto } from './dto/publish-review.dto';
 import { POSTING_QUEUE, PostingJobData } from './posting.constants';
 
-const REVIEW_STATUSES = ['draft', 'pending', 'published', 'simulated'] as const;
+const REVIEW_STATUSES = ['draft', 'pending', 'published', 'posted'] as const;
 type ReviewStatus = (typeof REVIEW_STATUSES)[number];
 
 @Injectable()
@@ -52,6 +52,7 @@ export class ReviewsService {
   async findAll(userId: string, query: QueryReviewsDto) {
     const {
       status,
+      statuses,
       listing_id,
       business_id,
       date_from,
@@ -71,7 +72,13 @@ export class ReviewsService {
       deleted_at: null,
     };
 
-    if (status) where.status = status;
+    if (statuses) {
+      const list = statuses.split(',').map((s) => s.trim()).filter(Boolean);
+      if (list.length === 1) where.status = list[0];
+      else if (list.length > 1) where.status = { in: list };
+    } else if (status) {
+      where.status = status;
+    }
     if (listing_id) where.listing_id = listing_id;
     if (business_id) where.business_id = business_id;
     if (search) where.review_text = { contains: search, mode: 'insensitive' };
@@ -103,7 +110,7 @@ export class ReviewsService {
           language: true,
           created_at: true,
           updated_at: true,
-          business: { select: { name: true } },
+          business: { select: { name: true, business_type: true } },
           listing: { select: { listing_id: true, external_url: true } },
         },
       }),
@@ -258,7 +265,21 @@ export class ReviewsService {
     if (!review) throw new NotFoundException(`Review ${id} not found`);
     if (review.user_id !== userId) throw new ForbiddenException('Access denied');
 
-    return review;
+    const allListings = await this.prisma.listing.findMany({
+      where: { business_id: review.business_id, is_active: true },
+      include: { network: { select: { network_id: true, name: true } } },
+    });
+    const networks = allListings.map((l) => ({
+      network_id: l.network.network_id,
+      id: l.network.network_id,
+      name: l.network.name,
+      slug: l.network.name.toLowerCase().replace(/\s+/g, ''),
+    }));
+
+    return {
+      ...review,
+      listing: review.listing ? { ...review.listing, networks } : null,
+    };
   }
 
   async update(userId: string, id: string, dto: UpdateReviewDto) {
@@ -325,7 +346,8 @@ export class ReviewsService {
       const draft = await this.prisma.reviewDraft.findFirst({
         where: { review_id: reviewId, network_id: networkId, is_selected: true },
       });
-      if (!draft) {
+      const draftText = draft?.draft_text ?? review.review_text;
+      if (!draftText) {
         skipped.push({ network: network.name, reason: 'No selected draft for this platform' });
         continue;
       }
@@ -335,23 +357,13 @@ export class ReviewsService {
         continue;
       }
 
-      let account = await this.prisma.userPlatformAccount.findFirst({
-        where: { user_id: userId, network_id: networkId, is_active: true },
-      });
-      if (!account) {
-        account = await this.prisma.userPlatformAccount.create({
-          data: { user_id: userId, network_id: networkId, is_active: false },
-        });
-      }
-
       const post = await this.prisma.reviewPlatformPost.create({
         data: {
           review_id: reviewId,
           network_id: networkId,
           listing_id: review.listing_id,
-          user_platform_account_id: account.account_id,
           status: 'queued',
-          platform_specific_text: draft.draft_text,
+          platform_specific_text: draftText,
           retry_count: 0,
         },
       });
@@ -363,7 +375,7 @@ export class ReviewsService {
           review_id: reviewId,
           network_id: networkId,
           network_name: network.name,
-          draft_text: draft.draft_text,
+          draft_text: draftText,
           user_id: userId,
           listing_id: review.listing_id,
         } as PostingJobData,
@@ -491,9 +503,17 @@ export class ReviewsService {
       })),
     };
 
+    const summaryContext = review.conversation_summary
+      ? `\nContext from previous session:\n${review.conversation_summary}`
+      : '';
+
+    const transcript = review.review_text
+      ? `The current review text is: "${review.review_text}".${summaryContext}\nThe user wants to continue refining it. Ask them what they would like to change.`
+      : review.review_text;
+
     const result = await this.aiService.startChat(
       reviewId,
-      review.review_text,
+      transcript,
       review.listing_id ?? '',
       review.language ?? 'fr',
       listingContext,
@@ -508,15 +528,28 @@ export class ReviewsService {
     return { ...result, review_id: reviewId };
   }
 
-  async sendMessage(userId: string, reviewId: string, message: string) {
+  async sendMessage(userId: string, reviewId: string, message: string, sessionId?: string) {
     const review = await this.prisma.review.findFirst({
       where: { review_id: reviewId, deleted_at: null },
     });
     if (!review) throw new NotFoundException(`Review ${reviewId} not found`);
     if (review.user_id !== userId) throw new ForbiddenException('Access denied');
-    if (!review.ai_session_id) throw new BadRequestException('No active AI session for this review');
 
-    return this.aiService.sendMessage(review.ai_session_id, message, userId);
+    const sid = sessionId ?? review.ai_session_id;
+    if (!sid) throw new BadRequestException('No active AI session for this review');
+
+    const aiResponse = await this.aiService.sendMessage(sid, message, userId);
+
+    if (!message.startsWith('Please rewrite this review')) {
+      await this.prisma.reviewChatMessage.createMany({
+        data: [
+          { review_id: reviewId, role: 'user', content: message },
+          { review_id: reviewId, role: 'assistant', content: aiResponse.response },
+        ],
+      });
+    }
+
+    return aiResponse;
   }
 
   async approveDraft(userId: string, reviewId: string) {
@@ -533,22 +566,136 @@ export class ReviewsService {
     await this.prisma.review.update({
       where: { review_id: reviewId },
       data: {
-        review_text: result.improved_text,
+        review_text: result.review_text,
         rating: result.rating,
         tone: result.tone,
         status: 'pending',
         ai_session_id: null,
+        conversation_summary: result.conversation_summary,
+      },
+    });
+
+    const existingDraft = await this.prisma.reviewDraft.findFirst({
+      where: { review_id: reviewId },
+    });
+
+    await this.prisma.reviewDraft.upsert({
+      where: { draft_id: existingDraft?.draft_id ?? '00000000-0000-0000-0000-000000000000' },
+      create: {
+        review_id: reviewId,
+        draft_text: result.review_text,
+        is_selected: true,
+      },
+      update: {
+        draft_text: result.review_text,
+        is_selected: true,
       },
     });
 
     await this.prisma.reviewDraft.updateMany({
       where: { review_id: reviewId, is_selected: true },
-      data: { draft_text: result.improved_text },
+      data: { draft_text: result.review_text },
     });
 
     await this.aiService.endSession(sessionId, userId);
 
     return { ...result, review_id: reviewId };
+  }
+
+  async getPublishLink(userId: string, reviewId: string, platformId: string) {
+    const review = await this.prisma.review.findFirst({
+      where: { review_id: reviewId, deleted_at: null },
+      include: { business: { select: { name: true } } },
+    });
+    if (!review) throw new NotFoundException(`Review ${reviewId} not found`);
+    if (review.user_id !== userId) throw new ForbiddenException('Access denied');
+
+    // Find the listing for this business on the specific platform
+    let listing = await this.prisma.listing.findFirst({
+      where: { business_id: review.business_id, network_id: platformId },
+      include: { network: { include: { preferences: true } } },
+    });
+    // Fall back to any listing for this business (handles legacy single-listing data)
+    if (!listing) {
+      listing = await this.prisma.listing.findFirst({
+        where: { business_id: review.business_id },
+        include: { network: { include: { preferences: true } } },
+      });
+    }
+    if (!listing) throw new NotFoundException('No listing found for this business');
+
+    if (listing.network?.preferences?.post_auth_type !== 'clipboard_deeplink') {
+      throw new BadRequestException('Platform does not support clipboard deep links, or no deep link defined for this network');
+    }
+
+    const networkName = listing.network.name;
+    const extId = listing.external_listing_id ?? '';
+    const bizName = review.business.name;
+
+    const hasValidId =
+      !!listing.external_listing_id &&
+      !listing.external_listing_id.startsWith('osm-') &&
+      !listing.external_listing_id.startsWith('manual-');
+
+    let url: string | null = null;
+
+    if (hasValidId) {
+      if (networkName === 'Google') {
+        url = `https://search.google.com/local/writereview?placeid=${extId}`;
+      } else if (networkName === 'Yelp') {
+        url = `https://www.yelp.com/writeareview/biz/${extId}`;
+      } else if (networkName === 'TripAdvisor') {
+        url = `https://www.tripadvisor.com/Search?q=${encodeURIComponent(bizName)}`;
+      } else if (networkName === 'Facebook') {
+        url = `https://www.facebook.com/search/top?q=${encodeURIComponent(bizName)}`;
+      } else if (networkName === 'Trustpilot') {
+        const reviewPath = listing.external_url?.split('/review/').pop();
+        url = reviewPath
+          ? `https://www.trustpilot.com/evaluate/${reviewPath}`
+          : `https://www.trustpilot.com/evaluate/${encodeURIComponent(bizName.toLowerCase().replace(/\s+/g, '-'))}`;
+      } else {
+        url = `https://maps.google.com/?q=${encodeURIComponent(bizName)}`;
+      }
+    }
+
+    let account = await this.prisma.userPlatformAccount.findFirst({
+      where: { user_id: userId, network_id: platformId, is_active: true },
+    });
+    if (!account) {
+      account = await this.prisma.userPlatformAccount.create({
+        data: { user_id: userId, network_id: platformId, is_active: false },
+      });
+    }
+
+    await this.prisma.reviewPlatformPost.create({
+      data: {
+        review_id: reviewId,
+        network_id: platformId,
+        listing_id: listing.listing_id,
+        user_platform_account_id: account.account_id,
+        status: 'clipboard_opened',
+        retry_count: 0,
+      },
+    });
+
+    return {
+      url,
+      review_text: review.review_text,
+      platform_name: networkName,
+    };
+  }
+
+  async getChatHistory(userId: string, reviewId: string) {
+    const review = await this.prisma.review.findFirst({
+      where: { review_id: reviewId, deleted_at: null },
+    });
+    if (!review) throw new NotFoundException(`Review ${reviewId} not found`);
+    if (review.user_id !== userId) throw new ForbiddenException('Access denied');
+
+    return this.prisma.reviewChatMessage.findMany({
+      where: { review_id: reviewId },
+      orderBy: { created_at: 'asc' },
+    });
   }
 
   async getDrafts(userId: string, reviewId: string) {

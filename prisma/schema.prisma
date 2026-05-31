@@ -255,10 +255,12 @@ model Review {
   tone           String?
   intent         String?
   language       String?              @db.VarChar(10)
-  ai_session_id  String?
-  created_at     DateTime             @default(now())
+  ai_session_id        String?
+  conversation_summary String?
+  created_at           DateTime             @default(now())
   updated_at     DateTime             @updatedAt
   deleted_at     DateTime?
+  chat_messages  ReviewChatMessage[]
   drafts         ReviewDraft[]
   histories      ReviewHistory[]
   medias         ReviewMedia[]
@@ -272,6 +274,18 @@ model Review {
   @@index([created_at])
   @@index([listing_id])
   @@map("reviews")
+}
+
+model ReviewChatMessage {
+  message_id String   @id @default(uuid()) @db.Uuid
+  review_id  String   @db.Uuid
+  role       String
+  content    String
+  created_at DateTime @default(now())
+  review     Review   @relation(fields: [review_id], references: [review_id])
+
+  @@index([review_id])
+  @@map("review_chat_messages")
 }
 
 model ReviewMedia {
@@ -325,7 +339,7 @@ model ReviewPlatformPost {
   review_id                String              @db.Uuid
   network_id               String              @db.Uuid
   listing_id               String?             @db.Uuid
-  user_platform_account_id String              @db.Uuid
+  user_platform_account_id String?             @db.Uuid
   external_review_id       String?
   status                   String
   platform_specific_text   String?
@@ -339,7 +353,7 @@ model ReviewPlatformPost {
   listing                  Listing?            @relation(fields: [listing_id], references: [listing_id])
   network                  Network             @relation(fields: [network_id], references: [network_id])
   review                   Review              @relation(fields: [review_id], references: [review_id])
-  user_account             UserPlatformAccount @relation(fields: [user_platform_account_id], references: [account_id])
+  user_account             UserPlatformAccount? @relation(fields: [user_platform_account_id], references: [account_id])
 
   @@map("review_platform_posts")
 }

@@ -17,6 +17,7 @@ import {
   ApiOperation,
   ApiBearerAuth,
   ApiParam,
+  ApiQuery,
   ApiBody,
   ApiConsumes,
   ApiCreatedResponse,
@@ -259,6 +260,35 @@ export class ReviewsController {
     return this.reviewsService.getPosts(req.user.user_id, id);
   }
 
+  @Get(':id/publish-link')
+  @ApiOperation({
+    summary: 'Get the deep-link write-review URL for a clipboard-based platform',
+    description:
+      'Returns a direct URL to write a review on Google, Yelp, or Trustpilot. Requires the network to have post_auth_type=clipboard_deeplink. Creates a clipboard_opened post record.',
+  })
+  @ApiParam({ name: 'id', description: 'Review UUID' })
+  @ApiQuery({ name: 'platform_id', description: 'Network UUID of the target platform', required: true })
+  @ApiOkResponse({
+    description: 'Deep-link URL, review text, and platform name',
+    schema: {
+      properties: {
+        url: { type: 'string', example: 'https://search.google.com/local/writereview?placeid=ChIJ...' },
+        review_text: { type: 'string', example: 'Great place!' },
+        platform_name: { type: 'string', example: 'Google' },
+      },
+    },
+  })
+  @ApiBadRequestResponse({ description: 'Platform does not support clipboard deep links, or no deep link defined for this network' })
+  @ApiNotFoundResponse({ description: 'Review not found or no listing found for this platform' })
+  @ApiForbiddenResponse({ description: 'Review belongs to another user' })
+  getPublishLink(
+    @Request() req,
+    @Param('id') id: string,
+    @Query('platform_id') platformId: string,
+  ) {
+    return this.reviewsService.getPublishLink(req.user.user_id, id, platformId);
+  }
+
   // ── AI Review Composer ────────────────────────────────────────────────────
 
   @Post(':id/transcribe')
@@ -352,8 +382,9 @@ export class ReviewsController {
     @Request() req,
     @Param('id') id: string,
     @Body('message') message: string,
+    @Body('session_id') sessionId?: string,
   ) {
-    return this.reviewsService.sendMessage(req.user.user_id, id, message);
+    return this.reviewsService.sendMessage(req.user.user_id, id, message, sessionId);
   }
 
   @Post(':id/chat/approve')
@@ -378,6 +409,32 @@ export class ReviewsController {
   @ApiForbiddenResponse({ description: 'Review belongs to another user' })
   approveDraft(@Request() req, @Param('id') id: string) {
     return this.reviewsService.approveDraft(req.user.user_id, id);
+  }
+
+  @Get(':id/chat/history')
+  @ApiTags('AI Review Composer')
+  @ApiOperation({ summary: 'Get full chat history for a review' })
+  @ApiParam({ name: 'id', description: 'Review UUID' })
+  @ApiOkResponse({
+    description: 'Ordered list of chat messages (user + assistant)',
+    schema: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          message_id: { type: 'string' },
+          review_id: { type: 'string' },
+          role: { type: 'string', example: 'assistant' },
+          content: { type: 'string' },
+          created_at: { type: 'string', format: 'date-time' },
+        },
+      },
+    },
+  })
+  @ApiNotFoundResponse({ description: 'Review not found' })
+  @ApiForbiddenResponse({ description: 'Review belongs to another user' })
+  getChatHistory(@Request() req, @Param('id') id: string) {
+    return this.reviewsService.getChatHistory(req.user.user_id, id);
   }
 
   @Get(':id/drafts')

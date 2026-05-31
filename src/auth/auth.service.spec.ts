@@ -62,7 +62,14 @@ describe('AuthService', () => {
         sub: mockCredential.user_id,
         email: mockCredential.email,
       });
-      expect(result).toEqual({ access_token: 'signed-token' });
+      expect(result).toEqual({
+        access_token: 'signed-token',
+        user: {
+          user_id: mockCredential.user_id,
+          email: mockCredential.email,
+          display_name: 'Test User',
+        },
+      });
     });
 
     it('should throw ConflictException (409) when email is already registered', async () => {

@@ -30,6 +30,27 @@ export class ListingsController {
     return this.listingsService.search(dto.name, dto.address, dto.networks);
   }
 
+  @Get('nearby')
+  @ApiOperation({ summary: 'Proxy Overpass/OSM nearby search' })
+  @ApiQuery({ name: 'lat', required: true, example: 33.88 })
+  @ApiQuery({ name: 'lon', required: true, example: 10.1 })
+  @ApiQuery({ name: 'amenities', required: true, example: 'restaurant,fast_food' })
+  @ApiQuery({ name: 'radius', required: false, example: 3000 })
+  searchNearby(
+    @Query('lat') lat: string,
+    @Query('lon') lon: string,
+    @Query('amenities') amenities: string,
+    @Query('radius') radius?: string,
+  ) {
+    const amenityList = amenities ? amenities.split(',').filter(Boolean) : [];
+    return this.listingsService.searchNearby(
+      parseFloat(lat),
+      parseFloat(lon),
+      amenityList,
+      radius ? parseInt(radius, 10) : 3000,
+    );
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Fetch a saved listing from the database' })
   @ApiParam({ name: 'id', description: 'Listing UUID' })

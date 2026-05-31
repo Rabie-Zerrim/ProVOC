@@ -17,6 +17,11 @@ export class QueryReviewsDto {
   @IsIn(['draft', 'pending', 'published', 'simulated'])
   status?: string;
 
+  @ApiPropertyOptional({ description: 'Comma-separated list of statuses, e.g. draft,pending' })
+  @IsOptional()
+  @IsString()
+  statuses?: string;
+
   @ApiPropertyOptional({ description: 'Filter by listing UUID' })
   @IsOptional()
   @IsUUID()

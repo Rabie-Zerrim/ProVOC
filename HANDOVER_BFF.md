@@ -1,6 +1,6 @@
 # pv-bff Handover Report
 
-Generated: 2026-05-19
+Generated: 2026-05-27
 
 ---
 
@@ -15,7 +15,7 @@ Generated: 2026-05-19
 - Saving matched businesses and listings into PostgreSQL
 - Review lifecycle management: create draft → AI-compose → publish to platforms
 - **AI Review Composer**: audio transcription via Whisper (delegated to a FastAPI `pv-ai` sidecar), multi-turn conversational drafting, draft approval
-- Async review posting simulation via **BullMQ / Redis**
+- Async review posting via **BullMQ / Redis** (Facebook Graph API for demo; real OAuth path pending for other platforms)
 
 ### Tech stack — exact versions from package.json
 
@@ -85,6 +85,7 @@ npm run start:dev
 | `ZEMBRA_API_KEY` | Bearer token from Zembra dashboard | Yes | Authenticates calls to Zembra |
 | `ZEMBRA_BASE_URL` | `https://localapi.zembra.io` (dev) / `https://beta.api.zembra.io` (staging) | Yes | Zembra base URL |
 | `FASTAPI_URL` | `http://localhost:8000` | Yes | URL of the `pv-ai` FastAPI sidecar |
+| `FACEBOOK_TEST_TOKEN` | User access token from Meta Graph Explorer | Yes (posting) | Access token used directly by `PostingWorker` to call `POST /v21.0/me/feed` for the demo; no OAuth flow needed |
 
 **Important:** the `.env` file in the repo contains a real `ZEMBRA_API_KEY` — do **not** commit this key to a public repo.
 
@@ -111,13 +112,14 @@ Backend waits for both `database` and `redis` health-checks before starting. The
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | `POST` | `/auth/login` | Public | Validates email + bcrypt password against `user_credentials`; returns a signed JWT |
+| `POST` | `/auth/register` | Public | Creates `User` + `UserCredential` in a single `$transaction` (bcrypt hash, 10 rounds); returns signed JWT. Throws 409 if email already registered |
 
 **Database tables touched:** `users`, `user_credentials`
 
 **JWT payload:** `{ sub: user_id, email }`  
 **Token expiry:** configurable via `JWT_EXPIRES_IN` (default `7d`)
 
-**Test file:** No dedicated spec for `AuthService` currently. Auth is covered indirectly in `test/auth.e2e-spec.ts`.
+**Test file:** [src/auth/auth.service.spec.ts](src/auth/auth.service.spec.ts) — **3 unit tests** (register happy path, 409 conflict on duplicate email, `RegisterDto` password min-length validation)
 
 ---
 
@@ -128,12 +130,26 @@ Backend waits for both `database` and `redis` health-checks before starting. The
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | `GET` | `/listings/search` | JWT | Calls Zembra `/listing/match` with `?name=&address=&networks[]=`; returns raw Zembra response |
-| `GET` | `/listings/:id` | JWT | Fetches a saved listing from DB (includes `business` and `network`) |
-| `POST` | `/listings` | JWT | Saves a Zembra result: upserts `business` + `network` + `listing` records |
+| `GET` | `/listings/:id` | JWT | Fetches a saved listing; response always includes `networks: [{ network_id, name, slug }]` (empty array if no active listings) |
+| `POST` | `/listings` | JWT | Saves a Zembra result: upserts `business` + `network` + `listing` records. Accepts optional `network_slug` to resolve an existing network by slug instead of creating one |
 
 **Database tables touched:** `listings`, `businesses`, `networks`
 
-**Test file:** [src/listings/listings.service.spec.ts](src/listings/listings.service.spec.ts) — **8 unit tests** (search, findById, save with existing/new network/business, 404 case)
+**Test file:** [src/listings/listings.service.spec.ts](src/listings/listings.service.spec.ts) — **11 unit tests** (search, findById always-returns-networks guarantee, populated networks, save with existing/new network/business, network_slug resolution, 404 case)
+
+---
+
+### Module: Networks
+
+**All endpoints require `Authorization: Bearer <JWT>`**
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/networks` | JWT | Returns all active networks ordered by name: `[{ network_id, name, slug, post_auth_type }]`. `slug` = `name.toLowerCase().replace(/\s+/g, '')` |
+
+**Database tables touched:** `networks`, `network_preferences`
+
+**Test file:** [src/networks/networks.service.spec.ts](src/networks/networks.service.spec.ts) — **4 unit tests** (correct shape, slug derivation, null post_auth_type, empty result)
 
 ---
 
@@ -160,6 +176,7 @@ Backend waits for both `database` and `redis` health-checks before starting. The
 | `POST` | `/reviews/:id/publish` | JWT | Body: `{ platform_ids: string[] }`. Checks for selected draft + `supports_api_posting` per network, creates `review_platform_posts` record (`status: 'queued'`), enqueues BullMQ job. Returns `{ queued, skipped }` immediately |
 | `POST` | `/reviews/:id/publish/retry` | JWT | Re-queues all `review_platform_posts` where `status = 'failed'`; increments `retry_count` |
 | `GET` | `/reviews/:id/posts` | JWT | Lists all platform post records for a review |
+| `GET` | `/reviews/:id/publish-link` | JWT | Query: `platform_id` (network UUID, required). Verifies `post_auth_type = clipboard_deeplink`; checks that `external_listing_id` is a valid platform ID (not `osm-*` or `manual-*`); constructs the write-review URL or returns `url: null` if the ID is invalid. Always creates a `review_platform_posts` record (`status: 'clipboard_opened'`). Returns `{ url, review_text, platform_name }` |
 
 #### AI Review Composer
 
@@ -168,16 +185,17 @@ Backend waits for both `database` and `redis` health-checks before starting. The
 | `POST` | `/reviews/:id/transcribe` | JWT | `multipart/form-data` with `audio` file field + optional `language`. Calls pv-ai Whisper transcription; updates `review_text` and `language` on the review |
 | `POST` | `/reviews/:id/chat/start` | JWT | Starts AI chat session; builds `listingContext` from all active listings of the business; stores `session_id` on the review |
 | `POST` | `/reviews/:id/chat/message` | JWT | Body: `{ message }`. Sends chat turn to pv-ai; requires active `ai_session_id` (400 if none) |
-| `POST` | `/reviews/:id/chat/approve` | JWT | Calls pv-ai approve endpoint; updates review (`review_text`, `rating`, `tone`, `status: 'pending'`); ends session |
+| `POST` | `/reviews/:id/chat/approve` | JWT | Calls pv-ai approve endpoint; updates review (`review_text`, `rating`, `tone`, `status: 'pending'`); upserts a `review_drafts` row with the improved text; ends session |
+| `GET` | `/reviews/:id/chat/history` | JWT | Returns all persisted chat messages for a review in ascending order |
 | `GET` | `/reviews/:id/drafts` | JWT | Lists all `review_drafts` with network name |
 
-**Database tables touched:** `reviews`, `review_drafts`, `review_platform_posts`, `review_histories`, `notifications`, `businesses`, `listings`, `networks`, `user_platform_accounts`
+**Database tables touched:** `reviews`, `review_drafts`, `review_platform_posts`, `review_histories`, `notifications`, `businesses`, `listings`, `networks`, `user_platform_accounts`, `review_chat_messages`
 
 **Test files:**
-- [src/reviews/reviews.service.spec.ts](src/reviews/reviews.service.spec.ts) — **~50 unit tests** covering all service methods including all 403/400 error branches
-- [src/reviews/posting.worker.spec.ts](src/reviews/posting.worker.spec.ts) — **5 unit tests** for BullMQ worker (success, notification creation, `onFailed` with retry guard)
+- [src/reviews/reviews.service.spec.ts](src/reviews/reviews.service.spec.ts) — **62 unit tests** covering all service methods including all 403/400 error branches and 3 new `getChatHistory` tests
+- [src/reviews/posting.worker.spec.ts](src/reviews/posting.worker.spec.ts) — **5 unit tests** for BullMQ worker (Facebook API success path, notification creation, `onFailed` with retry guard)
 
-**Total across all 4 suites: 60 tests, all passing.**
+**Total across all 6 suites: 81 tests, all passing.**
 
 ---
 
@@ -207,7 +225,8 @@ Schema file: [prisma/schema.prisma](prisma/schema.prisma)
 | `ReviewDraft` | `review_drafts` | `draft_id` (PK), `review_id` (FK), `network_id` (FK, nullable), `version` (default 1), `draft_text`, `compliance_check`, `is_selected` |
 | `ReviewMedia` | `review_medias` | `media_id` (PK), `review_id` (FK), `media_type`, `s3_key`, `original_filename`, `file_size_bytes`, `mime_type`, `thumbnail_url` |
 | `ReviewHistory` | `review_histories` | `history_id` (PK), `review_id` (FK), `previous_status`, `new_status`, `snapshot_text`, `changed_by_type`, `changed_by_id`, `reason` |
-| `ReviewPlatformPost` | `review_platform_posts` | `post_id` (PK), `review_id` (FK), `network_id` (FK), `listing_id` (FK, nullable), `user_platform_account_id` (FK), `external_review_id`, `status`, `platform_specific_text`, `scheduled_at`, `posted_at`, `retry_count`, `likes_count`, `error_message` |
+| `ReviewPlatformPost` | `review_platform_posts` | `post_id` (PK), `review_id` (FK), `network_id` (FK), `listing_id` (FK, nullable), `user_platform_account_id` (FK, **nullable** — omitted for Facebook demo posts), `external_review_id`, `status`, `platform_specific_text`, `scheduled_at`, `posted_at`, `retry_count`, `likes_count`, `error_message` |
+| `ReviewChatMessage` | `review_chat_messages` | `message_id` (PK, UUID), `review_id` (FK), `role` (String: `'user'` or `'assistant'`), `content`, `created_at` |
 | `Notification` | `notifications` | `notification_id` (PK), `user_id` (FK), `type`, `category`, `title`, `body`, `data` (JSON), `is_read`, `is_sent`, `sent_at`, `scheduled_for` |
 
 ### Relations
@@ -233,6 +252,8 @@ Network 1──* ReviewDraft
 Network 1──* ReviewPlatformPost
 Network 1──1 NetworkPreference
 
+Review 1──* ReviewChatMessage
+
 Listing 1──* Review
 Listing 1──* ReviewPlatformPost
 
@@ -241,7 +262,7 @@ Review 1──* ReviewHistory
 Review 1──* ReviewMedia
 Review 1──* ReviewPlatformPost
 
-ReviewPlatformPost *──1 UserPlatformAccount
+ReviewPlatformPost *──0,1 UserPlatformAccount  (nullable since 2026-05-27)
 
 Role 1──* RolePermission
 Role 1──* UserRole
@@ -287,13 +308,15 @@ d:\pfe backend\pv-bff/
 ├── tsconfig.json                    # Base TS config; target ES2021, emitDecoratorMetadata
 ├── tsconfig.build.json              # Extends base; excludes tests and node_modules
 ├── prisma/
-│   ├── schema.prisma                # Full DB schema; 21 models / tables
+│   ├── schema.prisma                # Full DB schema; 22 models / tables
 │   ├── prisma.config.ts             # Prisma config entrypoint
+│   ├── seed.ts                      # Upserts 4 networks + NetworkPreferences: Yelp, Google, Trustpilot (clipboard_deeplink / supports_api_posting=false), Facebook (api_oauth / supports_api_posting=true)
 │   └── migrations/
 │       ├── 20260310132406_init/             # Initial schema: all 19 base tables
 │       ├── 20260312000001_add_user_credentials/   # Adds user_credentials table
 │       ├── 20260518202432_add_review_indexes/     # 4 performance indexes on reviews
-│       └── 20260519073404_add_ai_session_id/      # Adds ai_session_id column to reviews
+│       ├── 20260519073404_add_ai_session_id/      # Adds ai_session_id column to reviews
+│       └── 20260530021019_add_chat_history/       # Adds review_chat_messages table
 ├── src/
 │   ├── main.ts                      # Bootstrap: creates NestJS app, GlobalPipes, Swagger, listen
 │   ├── app.module.ts                # Root module: imports ConfigModule, BullModule, all feature modules
@@ -305,28 +328,35 @@ d:\pfe backend\pv-bff/
 │   │   └── prisma.service.ts        # PrismaClient wrapper with onModuleInit/Destroy lifecycle
 │   ├── auth/
 │   │   ├── auth.module.ts           # JwtModule.registerAsync + PassportModule; exports strategy
-│   │   ├── auth.service.ts          # login(): looks up UserCredential, bcrypt.compare, signs JWT
-│   │   ├── auth.controller.ts       # POST /auth/login
+│   │   ├── auth.service.ts          # login() + register(): bcrypt.compare / bcrypt.hash (10 rounds), $transaction user+credential creation, signs JWT
+│   │   ├── auth.service.spec.ts     # 3 unit tests: register happy path, 409 on duplicate email, RegisterDto password min-length
+│   │   ├── auth.controller.ts       # POST /auth/login, POST /auth/register
 │   │   ├── dto/
-│   │   │   └── login.dto.ts         # { email: @IsEmail, password: @IsString @MinLength(8) }
+│   │   │   ├── login.dto.ts         # { email: @IsEmail, password: @IsString @MinLength(8) }
+│   │   │   └── register.dto.ts      # { display_name: @IsString, email: @IsEmail, password: @IsString @MinLength(8) }
 │   │   ├── guards/
 │   │   │   └── jwt-auth.guard.ts    # @Injectable AuthGuard('jwt') — applied per-controller
 │   │   └── strategies/
 │   │       └── jwt.strategy.ts      # Extracts Bearer token; validates → returns { user_id, email }
 │   ├── listings/
 │   │   ├── listings.module.ts       # HttpModule with rejectUnauthorized:false for Zembra TLS
-│   │   ├── listings.service.ts      # search(), findById(), save() methods
+│   │   ├── listings.service.ts      # search(), findById() (networks always []), save() with network_slug
 │   │   ├── listings.controller.ts   # GET /listings/search, GET /listings/:id, POST /listings
-│   │   ├── listings.service.spec.ts # 8 unit tests for ListingsService
+│   │   ├── listings.service.spec.ts # 11 unit tests for ListingsService
 │   │   └── dto/
 │   │       ├── search-listings.dto.ts  # { name, address, networks[]? } with @Transform for arrays
-│   │       └── save-listing.dto.ts     # { external_listing_id, name, address?, business_type?, ... }
+│   │       └── save-listing.dto.ts     # { external_listing_id, name, ..., network?, network_slug? }
+│   ├── networks/
+│   │   ├── networks.module.ts       # Simple module; uses global PrismaModule
+│   │   ├── networks.service.ts      # findAll(): returns active networks with slug + post_auth_type
+│   │   ├── networks.controller.ts   # GET /networks
+│   │   └── networks.service.spec.ts # 4 unit tests for NetworksService
 │   ├── reviews/
 │   │   ├── reviews.module.ts        # Imports PrismaModule, AiModule, BullMQ queue registration
-│   │   ├── reviews.service.ts       # All 14 service methods (576 lines)
-│   │   ├── reviews.controller.ts    # All 16 API endpoints with full Swagger decoration (411 lines)
-│   │   ├── reviews.service.spec.ts  # ~50 unit tests for ReviewsService
-│   │   ├── posting.worker.ts        # BullMQ @Processor; simulates posting + notifications
+│   │   ├── reviews.service.ts       # All 15 service methods (includes getPublishLink)
+│   │   ├── reviews.controller.ts    # All 17 API endpoints with full Swagger decoration (includes GET :id/publish-link)
+│   │   ├── reviews.service.spec.ts  # 59 unit tests for ReviewsService
+│   │   ├── posting.worker.ts        # BullMQ @Processor; calls Facebook Graph API, stores post id, creates notification
 │   │   ├── posting.worker.spec.ts   # 5 unit tests for PostingWorker
 │   │   ├── posting.constants.ts     # POSTING_QUEUE constant + PostingJobData interface
 │   │   └── dto/
@@ -358,6 +388,18 @@ Content-Type: application/json
 
 → 200 { "access_token": "eyJhbGci..." }
 → 401 if email not found, wrong password, or account inactive
+```
+
+**Register**
+```
+POST /auth/register
+Content-Type: application/json
+
+{ "display_name": "Alice", "email": "alice@example.com", "password": "mypassword" }
+
+→ 201 { "access_token": "eyJhbGci..." }
+→ 409 if email already registered
+→ 400 if password < 8 chars or email is not valid
 ```
 
 ---
@@ -429,7 +471,7 @@ Authorization: Bearer <token>
 
 → 200 {
   total_reviews: 12,
-  by_status: { draft: 5, pending: 2, published: 3, simulated: 2 },
+  by_status: { draft: 5, pending: 2, published: 3, posted: 2 },
   recent_reviews: [ { review_id, business_name, rating, status, created_at } ],
   top_businesses: [ { business_id, name, review_count } ]
 }
@@ -444,11 +486,25 @@ Authorization: Bearer <token>
 
 → 201 { queued: ["Google"], skipped: [{ network: "Yelp", reason: "No selected draft for this platform" }] }
 ```
-The BullMQ worker fires async: marks post as `simulated` 
-(status transitions: `queued` → `simulated` on success, 
-`queued` → `failed` after 3 failed attempts), sets 
-`external_review_id = "SIMULATED-<uuid>"`, flips review 
-status to `published`, creates a notification.
+The BullMQ worker fires async: calls `POST https://graph.facebook.com/v21.0/me/feed` with
+`FACEBOOK_TEST_TOKEN` and the draft text, then on success marks the post as `posted`
+(status transitions: `queued` → `posted` on success, `queued` → `failed` after 3 failed
+attempts), stores the real Facebook post id as `external_review_id`, sets `posted_at = now`,
+flips the review status to `published`, and creates a notification. On any HTTP error the
+worker throws, letting BullMQ handle exponential-backoff retry.
+
+**Get clipboard deep-link**
+```
+GET /reviews/<review-id>/publish-link?platform_id=<network-uuid>
+Authorization: Bearer <token>
+
+→ 200 { "url": "https://search.google.com/local/writereview?placeid=ChIJ...", "review_text": "Great place!", "platform_name": "Google" }
+→ 400 if network post_auth_type is not clipboard_deeplink, or network name not recognised
+→ 403 if review belongs to another user
+→ 404 if review not found or no listing exists for this platform
+```
+
+Also creates a `review_platform_posts` row with `status = 'clipboard_opened'` so the post history reflects that the user was given the link.
 
 **AI transcription**
 ```
@@ -469,6 +525,7 @@ Requires the `pv-ai` FastAPI sidecar running at `FASTAPI_URL`.
 - **Zembra API** — live lookup confirmed (`GET /listings/search`)
 - **PostgreSQL** — all 4 migrations applied, 21 tables created
 - **Redis / BullMQ** — queue connects and jobs are processed by `PostingWorker`
+- **Facebook Graph API** — `PostingWorker` calls `POST /v21.0/me/feed` with `FACEBOOK_TEST_TOKEN`; real post id stored in `external_review_id`
 - **pv-ai FastAPI sidecar** — HTTP proxy tested; 502/503 error mapping works correctly
 - **pv-ai JWT relay** — BFF relays user identity via shared secret, tokens cached 25 min per user
 
@@ -482,28 +539,21 @@ Requires the `pv-ai` FastAPI sidecar running at `FASTAPI_URL`.
 
 2. **User preferences and consent management endpoints** — `user_preferences`, `data_consent` tables exist but have no API. Users cannot set their `default_tone`, `preferred_networks`, or manage GDPR consent.
 
-3. **User registration endpoint** — there is no `POST /auth/register` or any way to create a `User` + `UserCredential` record via the API. To log in, a user must be seeded directly into the database.
-**Workaround until implemented:** insert a test user manually 
-using the SQL snippet in Section 10 Step 6. The bcrypt hash 
-in that snippet corresponds to the password `password123`.
+3. **User platform account management** — `user_platform_accounts` (OAuth tokens for platforms) cannot be created/managed via API. The `publish` flow no longer creates a placeholder account; `user_platform_account_id` is now nullable on `review_platform_posts`. Real per-user OAuth is not implemented.
 
-4. **User platform account management** — `user_platform_accounts` (OAuth tokens for platforms) cannot be created/managed via API. The `publish` flow creates a placeholder account automatically but real OAuth is not implemented.
+4. **Media upload** — `review_medias` table exists but there is no `POST /reviews/:id/media` endpoint. The `ReviewMedia` model references an `s3_key` field; no S3 integration exists.
 
-5. **`NetworkPreference` seeding** — `supports_api_posting` must be `true` in `network_preferences` for a platform to pass the publish check. There is no API or seed script to create these records; they must be inserted manually.
+5. **`ReviewHistory` tracking** — the table exists but no code writes to it. Status changes from `update()`, `remove()`, `publish()`, and `approveDraft()` are not logged.
 
-6. **Media upload** — `review_medias` table exists but there is no `POST /reviews/:id/media` endpoint. The `ReviewMedia` model references an `s3_key` field; no S3 integration exists.
+6. **`UserActivityStats` calculation** — the table exists but no service calculates or updates it.
 
-7. **`ReviewHistory` tracking** — the table exists but no code writes to it. Status changes from `update()`, `remove()`, `publish()`, and `approveDraft()` are not logged.
+7. **Real platform posting (partial)** — Facebook posting is live for the demo via `FACEBOOK_TEST_TOKEN`. The worker calls the Facebook Graph API and stores the real post id. Posting to Google, Yelp, TripAdvisor, and other platforms is not yet implemented; those networks will queue a job but the worker will attempt a Facebook API call regardless of `network_name`.
 
-8. **`UserActivityStats` calculation** — the table exists but no service calculates or updates it.
+8. **Real OAuth for platform accounts** — `UserPlatformAccount.oauth_token` / `refresh_token` fields exist but are never populated.
 
-9. **Real platform posting** — all posting is simulated. The worker sets `status = 'simulated'` with a fake `external_review_id`. There is no real API call to Google/Yelp/etc.
+9. **Notifications delivery** — notifications are created in the DB but never pushed (no WebSocket, no FCM, no email).
 
-10. **Real OAuth for platform accounts** — `UserPlatformAccount.oauth_token` / `refresh_token` fields exist but are never populated.
-
-11. **Notifications delivery** — notifications are created in the DB but never pushed (no WebSocket, no FCM, no email).
-
-12. **`GET /test-db`** — the debug endpoint in `AppController` is still live in production. It should be removed or gated.
+10. **`GET /test-db`** — the debug endpoint in `AppController` is still live in production. It should be removed or gated.
 
 ### Incomplete / known issues
 
@@ -518,32 +568,7 @@ in that snippet corresponds to the password `password123`.
 
 ## 7. NEXT STEPS IN PRIORITY ORDER
 
-### 1. User registration (`POST /auth/register`)
-
-**Why first:** nothing works end-to-end without being able to create users via the API.
-
-**Files to touch:**
-- Create `src/auth/dto/register.dto.ts` — `{ display_name, email, password }`
-- Edit [src/auth/auth.service.ts](src/auth/auth.service.ts) — add `register()` method: create `User` then `UserCredential` (bcrypt hash password, salt rounds = 10)
-- Edit [src/auth/auth.controller.ts](src/auth/auth.controller.ts) — add `POST /auth/register`
-
-**Complexity:** Low (1–2 hours)
-
----
-
-### 2. `NetworkPreference` seed / management
-
-**Why:** without a `network_preferences` row where `supports_api_posting = true`, every publish call returns skipped.
-
-**Files to touch:**
-- Add a Prisma seed script `prisma/seed.ts` that creates a test Network + NetworkPreference
-- Or add `POST /admin/networks` endpoint (basic, auth-gated)
-
-**Complexity:** Low (1 hour for seed; Medium for full admin API)
-
----
-
-### 3. Role and permission management APIs
+### 1. Role and permission management APIs
 
 **What:** CRUD for roles and permissions; assign roles to users; enforce RBAC via a custom `RolesGuard`.
 
@@ -556,7 +581,7 @@ in that snippet corresponds to the password `password123`.
 
 ---
 
-### 4. User preferences and consent endpoints
+### 2. User preferences and consent endpoints
 
 **What:** `GET/PATCH /users/me/preferences` and `POST /users/me/consent`.
 
@@ -568,7 +593,7 @@ in that snippet corresponds to the password `password123`.
 
 ---
 
-### 5. Platform account OAuth connection
+### 3. Platform account OAuth connection
 
 **What:** endpoint for users to connect a platform account (store `oauth_token`). Required for real (non-simulated) posting.
 
@@ -580,19 +605,19 @@ in that snippet corresponds to the password `password123`.
 
 ---
 
-### 6. Real platform posting
+### 4. Multi-platform real posting
 
-**What:** replace the simulation in `PostingWorker.process()` with actual HTTP calls to platform APIs.
+**What:** `PostingWorker` now calls the Facebook Graph API for all jobs (demo). Extend it to dispatch to the correct platform based on `network_name`, and implement Google / Yelp / TripAdvisor posting.
 
 **Files to touch:**
-- [src/reviews/posting.worker.ts](src/reviews/posting.worker.ts) — replace the DB simulation block with a platform-specific API call
-- Possibly create `src/platforms/` service per network
+- [src/reviews/posting.worker.ts](src/reviews/posting.worker.ts) — add a `network_name` switch; implement per-platform HTTP calls
+- Possibly create `src/platforms/` service per network with its own OAuth token management
 
-**Complexity:** High (depends on each platform's API)
+**Complexity:** High (depends on each platform's API and OAuth requirements)
 
 ---
 
-### 7. `ReviewHistory` write-through
+### 5. `ReviewHistory` write-through
 
 **What:** every status change should append a row to `review_histories`.
 
@@ -603,7 +628,7 @@ in that snippet corresponds to the password `password123`.
 
 ---
 
-### 8. Tighten TypeScript config
+### 6. Tighten TypeScript config
 
 **What:** enable `strictNullChecks` and `noImplicitAny` in [tsconfig.json](tsconfig.json).
 
@@ -611,7 +636,7 @@ in that snippet corresponds to the password `password123`.
 
 ---
 
-### 9. Fix Dockerfile for production
+### 7. Fix Dockerfile for production
 
 **What:** change CMD to `node dist/main` (not `npm run start:dev`) and add a proper entrypoint that runs `prisma migrate deploy` before starting.
 
@@ -641,8 +666,14 @@ Reviews are never hard-deleted. The `deleted_at` field is set and all queries fi
 **5. `review_platform_posts` row created before enqueueing**
 The platform post record is created synchronously in `ReviewsService.publish()`, not in the worker. This ensures `GET /reviews/:id/posts` shows `status: 'queued'` immediately, and `retryFailed()` always has a stable row to increment `retry_count` on.
 
-**6. `UserPlatformAccount` placeholder on publish**
-The schema requires a `user_platform_account_id` FK on every platform post. Since real OAuth is not implemented, the service does `findFirst` for an active account — and if none exists, creates a placeholder (`is_active: false`) to satisfy the constraint. This is clearly a simulation workaround.
+**6. `user_platform_account_id` is now nullable on `review_platform_posts`**
+The schema previously required a `user_platform_account_id` FK on every platform post. `ReviewsService.publish()` was creating a placeholder `UserPlatformAccount` (`is_active: false`) purely to satisfy this constraint. Since posting now uses a global `FACEBOOK_TEST_TOKEN` (no per-user OAuth), the placeholder creation was removed and `user_platform_account_id` was made nullable (`String? @db.Uuid`) in `schema.prisma`. `getPublishLink()` still performs the findFirst/create for clipboard-deeplink platforms (Google, Yelp, Trustpilot) where the account record is still recorded for audit purposes. **Note:** the database column is still `NOT NULL` in applied migrations — a `prisma migrate dev` is required to propagate the nullable change to the actual DB before going to production.
+
+**7. `approveDraft()` draft row management via upsert**
+After the AI approve call, `approveDraft()` must ensure a `review_drafts` row exists with the improved text. It first calls `reviewDraft.findFirst` to check for an existing draft. It then calls `reviewDraft.upsert` using the found draft's `draft_id` as the key, or a sentinel UUID (`00000000-0000-0000-0000-000000000000`) when no draft exists — which forces Prisma to take the `create` branch. A follow-up `reviewDraft.updateMany` propagates the new `draft_text` to any other selected drafts for the same review. The sentinel UUID approach is a workaround for Prisma's requirement that the `where` clause of an upsert reference a unique field even when creating a new row.
+
+**8. `getPublishLink()` — clipboard deep-link flow**
+For platforms where users must copy-paste a review (Google, Yelp, Trustpilot), `post_auth_type = clipboard_deeplink` in `NetworkPreference` signals that the app should open the platform's native write-review page rather than posting via API. `getPublishLink()` looks up the listing for the review's business on the requested network, verifies the auth type, constructs the URL, and records the event as a `review_platform_posts` row with `status = clipboard_opened`. The URL construction is a switch on `network.name`: Google uses the `placeid` query param; Yelp uses the business slug; Trustpilot parses the domain from `listing.external_url` (path segment after `/review/`).
 
 ---
 
@@ -771,12 +802,15 @@ npm run test:e2e
 | Suite | File | Tests |
 |---|---|---|
 | AppController | [src/app.controller.spec.ts](src/app.controller.spec.ts) | 1 |
-| ListingsService | [src/listings/listings.service.spec.ts](src/listings/listings.service.spec.ts) | 8 |
-| ReviewsService | [src/reviews/reviews.service.spec.ts](src/reviews/reviews.service.spec.ts) | ~46 |
+| ListingsService | [src/listings/listings.service.spec.ts](src/listings/listings.service.spec.ts) | 11 |
+| AuthService | [src/auth/auth.service.spec.ts](src/auth/auth.service.spec.ts) | 3 |
+| ReviewsService | [src/reviews/reviews.service.spec.ts](src/reviews/reviews.service.spec.ts) | 64 |
 | PostingWorker | [src/reviews/posting.worker.spec.ts](src/reviews/posting.worker.spec.ts) | 5 |
-| **Total** | | **60 (all passing)** |
+| FacebookService | [src/facebook/facebook.service.spec.ts](src/facebook/facebook.service.spec.ts) | 2 |
+| NetworksService | [src/networks/networks.service.spec.ts](src/networks/networks.service.spec.ts) | 4 |
+| **Total** | | **90 (all passing)** |
 
-All tests mock the database (no DB required to run unit tests). The Prisma service is mocked via `jest.fn()`. BullMQ queue is mocked via `getQueueToken`. The AiService is mocked via a plain object with `jest.fn()` methods.
+All tests mock the database (no DB required to run unit tests). The Prisma service is mocked via `jest.fn()`. BullMQ queue is mocked via `getQueueToken`. The AiService is mocked via a plain object with `jest.fn()` methods. `PostingWorker` tests additionally mock `global.fetch` and `ConfigService` to stub the Facebook API call.
 
 ---
 
@@ -862,31 +896,24 @@ docker-compose exec database psql -U postgres -d provoc_db -c "\dt"
 # Should list 21 tables
 ```
 
-### Step 6 — Seed test data (required to log in)
+### Step 6 — Create a test user and seed network data
 
-There is no registration endpoint yet. Insert a test user manually:
+**Create a user via the API (preferred):**
 
-```sql
--- Connect to the database
-docker-compose exec database psql -U postgres -d provoc_db
-
--- Create a user
-INSERT INTO users (user_id, display_name, language, is_active, created_at, updated_at)
-VALUES (gen_random_uuid(), 'Test User', 'en', true, now(), now())
-RETURNING user_id;
-
--- Take the user_id from above and create credentials
--- Password below is bcrypt hash of "password123"
-INSERT INTO user_credentials (credential_id, user_id, email, password_hash, created_at, updated_at)
-VALUES (
-  gen_random_uuid(),
-  '<user_id from above>',
-  'test@example.com',
-  '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi',
-  now(),
-  now()
-);
+```bash
+curl -X POST http://localhost:3001/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"display_name":"Test User","email":"test@example.com","password":"password123"}'
+# → { "access_token": "eyJ..." }
 ```
+
+**Seed the four platform networks** (Yelp, Google, Trustpilot, Facebook) with their `NetworkPreference` records:
+
+```bash
+npx prisma db seed
+```
+
+This runs `prisma/seed.ts` and upserts all four networks so that publish and publish-link flows have valid `network_preferences` rows. Re-running is safe — all operations are upserts.
 
 ### Step 7 — Start the backend
 
@@ -898,6 +925,7 @@ Output should include:
 ```
 [Nest] LOG [NestApplication] Nest application successfully started
 [Nest] LOG [RouterExplorer] Mapped { /auth/login, POST }
+[Nest] LOG [RouterExplorer] Mapped { /auth/register, POST }
 ...
 ```
 
@@ -936,4 +964,527 @@ Ensure `FASTAPI_URL=http://localhost:8000` in `.env`.
 
 ---
 
-*This document reflects the state of the project as of 2026-05-19.*
+---
+
+## 11. CHAT HISTORY PERSISTENCE (added 2026-05-30)
+
+### What was implemented
+
+Chat messages are now persisted in PostgreSQL so users can resume a draft review with full AI context.
+
+**Database:** new `review_chat_messages` table, migration `20260530021019_add_chat_history`.
+
+**Schema model:**
+```prisma
+model ReviewChatMessage {
+  message_id String   @id @default(uuid()) @db.Uuid
+  review_id  String   @db.Uuid
+  role       String   // 'user' or 'assistant'
+  content    String
+  created_at DateTime @default(now())
+  review     Review   @relation(fields: [review_id], references: [review_id])
+
+  @@index([review_id])
+  @@map("review_chat_messages")
+}
+```
+
+**Behavior:**
+- `POST /reviews/:id/chat/start` — builds a transcript from `review.review_text` and starts a fresh pv-ai session. No DB history is queried; no messages are written to DB. See Section 19 for the simplified resume flow.
+  - **Review has text**: transcript = `You previously helped the user write this review: "{review_text}". The user wants to continue refining it. Ask them what they would like to change.`
+  - **Review has no text**: transcript = `''` (empty string, edge case for brand-new reviews).
+- `POST /reviews/:id/chat/message` — saves both the user message and the AI response after each turn using `createMany`.
+- `GET /reviews/:id/chat/history` — returns all chat messages ordered by `created_at` ascending (owner-scoped; 403 for wrong user, 404 if review missing).
+
+**New endpoint summary:**
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/reviews/:id/chat/history` | JWT | Returns ordered list of `ReviewChatMessage` rows for the review |
+
+**Files changed:**
+- [prisma/schema.prisma](prisma/schema.prisma) — `ReviewChatMessage` model + `chat_messages` relation on `Review`
+- [prisma/migrations/20260530021019_add_chat_history/](prisma/migrations/20260530021019_add_chat_history/) — migration SQL
+- [src/reviews/reviews.service.ts](src/reviews/reviews.service.ts) — `startChat`, `sendMessage` updated; `getChatHistory` added
+- [src/reviews/reviews.controller.ts](src/reviews/reviews.controller.ts) — `GET :id/chat/history` endpoint added
+- [src/ai/ai.service.ts](src/ai/ai.service.ts) — `startChat` accepts optional `previousMessages` parameter
+- [src/reviews/reviews.service.spec.ts](src/reviews/reviews.service.spec.ts) — `reviewChatMessage` mock added; `startChat` test updated for new 7th arg; 3 new `getChatHistory` tests
+
+**Also fixed (pre-existing test failures):**
+- `getPublishLink` — removed redundant `network.findUnique` call; added `post_auth_type` check on listing's network; fixed Trustpilot URL to parse domain from `listing.external_url`
+- `AuthService.register` test — updated expected result to include `user` field returned by the updated service
+- `ListingsService` tests — added `networkPreference` and `listing.findMany` mocks; updated assertions to match refactored `ensureNetwork` + `listingsToNetworks` logic
+
+---
+
+## 12. WHAT pv-ai NEEDS TO SUPPORT PREVIOUS_MESSAGES
+
+`POST /api/chat/start` in pv-ai does **not** currently accept a `previous_messages` field. When a user resumes a draft review that already has chat history in the BFF database, `AiService.startChat` now includes `previous_messages` in the request body — but pv-ai silently ignores it.
+
+**To make context restoration fully functional, pv-ai's `chat.py` must:**
+
+1. Accept an optional `previous_messages: list[dict]` field in the `/api/chat/start` request body (Pydantic model).
+
+2. If `previous_messages` is non-empty, pre-populate the Redis session's `chat_history` with those messages **before** calling Groq. Each entry has the shape `{"role": "user"|"assistant", "content": "..."}` — map directly to OpenAI message format.
+
+3. Insert the pre-populated history between the system prompt and the first new Groq call, so the LLM has context of the prior conversation.
+
+**Suggested change to `chat.py`:**
+```python
+# In the /start endpoint Pydantic model, add:
+class StartChatRequest(BaseModel):
+    ...
+    previous_messages: list[dict] | None = None
+
+# After building the system prompt and before calling Groq:
+if body.previous_messages:
+    session["chat_history"] += [
+        {"role": m["role"], "content": m["content"]}
+        for m in body.previous_messages
+    ]
+```
+
+**Until pv-ai is updated:** the BFF correctly sends `previous_messages` on `/chat/start`, but pv-ai starts each session fresh. Chat history is still stored in the BFF database and returned via `GET /reviews/:id/chat/history`, so the client can display past conversations — the AI just won't have that context on re-start.
+
+---
+
+---
+
+## 13. THREE BACKEND FIXES (added 2026-05-30)
+
+### FIX 1 — GET /listings/:id stable networks array
+
+`findById()` and all `save()` return paths now use `networks ?? []` explicitly so the `networks` key is **always** present at the top level and **never** undefined even when a business has no other active listings.
+
+Each entry in `networks` has the shape `{ network_id, name, slug }` where `slug = name.toLowerCase().replace(/\s+/g, '')` (e.g., `'Google'` → `'google'`, `'Trip Advisor'` → `'tripadvisor'`).
+
+**Files changed:** [src/listings/listings.service.ts](src/listings/listings.service.ts)
+
+**Tests added:** 2 new tests in `listings.service.spec.ts`
+- `always returns networks array even when business has no other active listings`
+- `returns populated networks when business has active listings`
+
+---
+
+### FIX 2 — POST /listings accepts network_slug
+
+`SaveListingDto` now accepts an optional `network_slug?: string` field. When provided, `save()` resolves it to an existing DB network via a **case-insensitive name lookup** using `SLUG_TO_NAME` (e.g., `'google'` → `'Google'`) before falling back to `ensureNetwork`. This skips the create-if-missing path and uses the pre-seeded network directly — which fixes the OSM fallback flow that sends `network: 'google'` as a slug string.
+
+**Resolution order in `save()`:**
+1. If `network_slug` is set and a matching network is found → use it (no ensureNetwork)
+2. If `network_slug` is set but no match → fall back to `ensureNetwork(network_slug)`
+3. If only `network` is set → `ensureNetwork(network)`
+4. Default → `ensureNetwork('google')`
+
+**Files changed:**
+- [src/listings/dto/save-listing.dto.ts](src/listings/dto/save-listing.dto.ts) — added `network_slug?: string`
+- [src/listings/listings.service.ts](src/listings/listings.service.ts) — added slug-lookup block before `ensureNetwork`
+
+**Test added:** 1 new test in `listings.service.spec.ts`
+- `resolves network_slug to existing network without calling ensureNetwork`
+
+---
+
+### FIX 3 — GET /networks endpoint
+
+New `NetworksModule` at `src/networks/` exposes a single authenticated endpoint:
+
+```
+GET /networks
+Authorization: Bearer <JWT>
+
+→ 200 [
+  { "network_id": "...", "name": "Facebook",   "slug": "facebook",    "post_auth_type": "api_oauth" },
+  { "network_id": "...", "name": "Google",     "slug": "google",      "post_auth_type": "clipboard_deeplink" },
+  { "network_id": "...", "name": "TripAdvisor","slug": "tripadvisor", "post_auth_type": "clipboard_deeplink" },
+  { "network_id": "...", "name": "Trustpilot", "slug": "trustpilot",  "post_auth_type": "clipboard_deeplink" },
+  { "network_id": "...", "name": "Yelp",       "slug": "yelp",        "post_auth_type": "clipboard_deeplink" }
+]
+```
+
+Results are ordered by `name` ascending and filtered to `is_active: true`. `post_auth_type` is `null` if the network has no `NetworkPreference` row.
+
+**Files created:**
+- [src/networks/networks.service.ts](src/networks/networks.service.ts)
+- [src/networks/networks.controller.ts](src/networks/networks.controller.ts)
+- [src/networks/networks.module.ts](src/networks/networks.module.ts)
+- [src/networks/networks.service.spec.ts](src/networks/networks.service.spec.ts) — 4 unit tests
+
+**Files changed:** [src/app.module.ts](src/app.module.ts) — `NetworksModule` added to imports
+
+---
+
+---
+
+## 14. getPublishLink OSM ID FIX (added 2026-05-30)
+
+### Bug
+
+When a listing was saved from an OSM nearby result, `external_listing_id` is `'osm-4386938002'` (an OpenStreetMap node ID, not a Google Place ID). `getPublishLink` was constructing:
+
+```
+https://search.google.com/local/writereview?placeid=osm-4386938002
+```
+
+Google rejects this URL with a 404 page.
+
+### Fix
+
+In `getPublishLink()`, after the listing is fetched and the `post_auth_type` check passes, a `hasValidId` flag is computed:
+
+```typescript
+const hasValidId =
+  !!listing.external_listing_id &&
+  !listing.external_listing_id.startsWith('osm-') &&
+  !listing.external_listing_id.startsWith('manual-');
+```
+
+- If `hasValidId` is **true**: URL construction proceeds as before.
+- If `hasValidId` is **false**: `url` stays `null`. No platform URL is constructed. The `ReviewPlatformPost` row is **still created** with `status: 'clipboard_opened'` (for audit). The response is `{ url: null, review_text, platform_name }`.
+
+The frontend handles `url: null` by falling back to a Google Maps search URL client-side.
+
+As a bonus simplification: inside `if (hasValidId)`, the old ternary `extId ? url_with_id : fallback_url` was removed — when `hasValidId` is true, `extId` is guaranteed to be a valid non-empty ID, so the fallback branch was dead code.
+
+### Files changed
+
+| File | Lines changed |
+|---|---|
+| [src/reviews/reviews.service.ts](src/reviews/reviews.service.ts) | `getPublishLink()`: added `hasValidId` constant; changed `let url: string` → `let url: string \| null = null`; wrapped URL switch inside `if (hasValidId)`; removed now-redundant empty-extId ternaries |
+| [src/reviews/reviews.service.spec.ts](src/reviews/reviews.service.spec.ts) | Added 1 test: `returns url: null when external_listing_id is an OSM id (osm- prefix)` |
+| [HANDOVER_BFF.md](HANDOVER_BFF.md) | Updated publish-link description, test count (62→63, total 88→89) |
+
+---
+
+---
+
+## 15. startChat chat-history ordering fix (added 2026-05-30)
+
+### Bug
+
+`startChat()` was saving only the AI's `initial_response` to `review_chat_messages`:
+
+```typescript
+// BROKEN — assistant row only
+await this.prisma.reviewChatMessage.create({
+  data: { review_id: reviewId, role: 'assistant', content: result.initial_response },
+});
+```
+
+This produced a broken conversation structure in the DB:
+
+```
+[assistant, user, assistant, user, assistant, …]
+```
+
+Groq expects alternating `user / assistant` turns starting with the **user**. The missing first `user` row broke context restoration and caused malformed history when resuming a session.
+
+### Fix
+
+Replaced the single `create` call with a `createMany` that atomically writes both rows in the correct order:
+
+```typescript
+// FIXED — user transcript first, then assistant response
+await this.prisma.reviewChatMessage.createMany({
+  data: [
+    { review_id: reviewId, role: 'user',      content: review.review_text      },
+    { review_id: reviewId, role: 'assistant', content: result.initial_response },
+  ],
+});
+```
+
+`review.review_text` is the user's original transcript (the text used as input to the AI session). It is already in scope from the earlier `prisma.review.findFirst` call and is passed as the second argument to `aiService.startChat`.
+
+The correct DB structure is now:
+
+```
+[user, assistant, user, assistant, user, assistant, …]
+```
+
+This fix applies on every `startChat` call — even when `previous_messages` already exist in the DB (resuming a session), the new transcript is always recorded.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| [src/reviews/reviews.service.ts](src/reviews/reviews.service.ts) | `startChat()`: replaced `reviewChatMessage.create` (assistant only) with `reviewChatMessage.createMany` (user + assistant pair) |
+| [src/reviews/reviews.service.spec.ts](src/reviews/reviews.service.spec.ts) | `startChat` happy-path test: swapped `create.mockResolvedValue` → `createMany.mockResolvedValue({ count: 2 })`; updated assertion to verify both user and assistant rows |
+| [HANDOVER_BFF.md](HANDOVER_BFF.md) | Section 11 behavior description updated; this section added |
+
+---
+
+---
+
+## 16. startChat resume-session fix (added 2026-05-30)
+
+### Bug
+
+Every call to `startChat()` unconditionally saved `review.review_text` as a new user row via `createMany`, even when the user was resuming an existing conversation. On a second session the DB grew:
+
+```
+[user(transcript), assistant(r1)]          ← first session
+[user(transcript), assistant(r1),          ← what the DB held
+ user(review_text), assistant(r2)]         ← second startChat appended this
+```
+
+The second `user(review_text)` row sent stale transcript text to Groq as if it were a new user message, confusing the conversation context.
+
+### Fix
+
+`startChat()` now branches on whether `existingMessages` is empty:
+
+```typescript
+const isNewSession = existingMessages.length === 0;
+const transcript = isNewSession
+  ? review.review_text
+  : 'Please continue helping refine this review based on our previous conversation.';
+```
+
+**New session** (`isNewSession === true`):
+- Passes `review.review_text` to `aiService.startChat` as the transcript (unchanged).
+- Saves `[user(transcript), assistant(response)]` via `createMany` (unchanged).
+
+**Resume session** (`isNewSession === false`):
+- Passes a fixed resume prompt to `aiService.startChat`. The real transcript is already included in `existingMessages` / `previous_messages` — no need to repeat it.
+- Saves **only** `assistant(response)` via a single `create`. No user row is written, so the DB stays clean.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| [src/reviews/reviews.service.ts](src/reviews/reviews.service.ts) | `startChat()`: added `isNewSession` / `transcript` variables; wrapped `createMany` in `if (isNewSession)` branch; added `else` branch with `create` (assistant only) |
+| [src/reviews/reviews.service.spec.ts](src/reviews/reviews.service.spec.ts) | Added 1 test: `resume: sends resume prompt to AI and saves only the assistant response`; existing new-session test unchanged |
+| [HANDOVER_BFF.md](HANDOVER_BFF.md) | Section 11 behavior updated; test count 63→64, total 89→90; this section added |
+
+---
+
+---
+
+## 17. startChat chat-history pollution fix (added 2026-05-30)
+
+### Bug
+
+After multiple resume sessions the `review_chat_messages` table accumulated polluted history:
+
+```
+[user, assistant]                    ← first session (correct)
+[user, assistant, assistant]         ← after first resume: duplicate assistant added
+[user, assistant, assistant,         ← after second resume: another assistant appended
+ assistant]
+```
+
+Two root causes:
+
+1. **`take: 20` fetched already-polluted rows** — resume sessions read their own previously-saved greeting rows back into `existingMessages`, which were then sent to pv-ai as context and further corrupted the conversation.
+
+2. **Resume branch saved the greeting assistant row** — the `else` branch called `reviewChatMessage.create` with the resume greeting (`"Please continue…"` response). This greeting is transient; saving it polluted subsequent resume reads and confused Groq's context window with consecutive assistant turns.
+
+### Fix
+
+Two targeted changes to `startChat()`:
+
+**FIX 1 — Reduce fetch window (`take: 20` → `take: 10`)**
+
+Limits `existingMessages` to the first 10 rows only. Since a first session saves at most `[user, assistant]` plus subsequent `sendMessage` pairs, 10 rows covers several real turns without reaching any previously-saved resume garbage. This is a safety net; FIX 2 is the primary cure.
+
+**FIX 2 — Remove DB write in resume branch**
+
+The entire `else` branch was removed:
+
+```typescript
+// REMOVED — was writing a transient greeting to DB on every resume
+} else {
+  await this.prisma.reviewChatMessage.create({
+    data: { review_id: reviewId, role: 'assistant', content: result.initial_response },
+  });
+}
+```
+
+The resume greeting exists only to orient the AI at session start. It is never shown to the user and must not be stored. All real conversation content is saved by `sendMessage()` (`createMany` for each user+assistant pair), so nothing useful is lost.
+
+**Also removed** — 5 temporary `console.log` debug statements added in a previous debugging session.
+
+### Resulting DB invariant
+
+```
+[user(transcript), assistant(r1)]   ← written by startChat on first session
+[user(msg1), assistant(r2)]         ← written by sendMessage turn 1
+[user(msg2), assistant(r3)]         ← written by sendMessage turn 2
+```
+
+On every subsequent `startChat` (resume): no rows written. DB unchanged.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| [src/reviews/reviews.service.ts](src/reviews/reviews.service.ts) | `startChat()`: `take: 20` → `take: 10`; removed `else` branch (`reviewChatMessage.create`); removed 5 debug `console.log` statements |
+| [src/reviews/reviews.service.spec.ts](src/reviews/reviews.service.spec.ts) | Resume test renamed to `resume: sends resume prompt to AI and does NOT save assistant response to DB`; removed `create.mockResolvedValue({})` setup; assertion changed from `toHaveBeenCalledWith(...)` to `not.toHaveBeenCalled()` |
+| [HANDOVER_BFF.md](HANDOVER_BFF.md) | Section 11 resume behavior description updated (`take` value + "saves nothing"); this section added |
+
+---
+
+---
+
+## 18. sendMessage rephrase-history fix (added 2026-05-30)
+
+### Bug
+
+When the frontend calls `handleRetry` (rephrase flow) it opens a new chat session via `chat/start`, sends a rephrase instruction via `chat/message`, then calls `chat/approve`. Because `sendMessage` unconditionally wrote every `(user, assistant)` pair to `review_chat_messages`, the rephrase instruction message was persisted alongside the original conversation:
+
+```
+[user(transcript), assistant(r1)]          ← first session (correct)
+[user(transcript), assistant(r1),
+ user("Please rewrite this review…"),       ← rephrase message written to DB ← BUG
+ assistant(rephrased text)]
+```
+
+When the user opened the review again, `startChat` fetched these 4 messages as `existingMessages` and passed them to pv-ai as prior context. pv-ai then saw the rephrase instruction as a real conversation turn, confusing subsequent sessions and making the AI think the user always wants to rephrase.
+
+### Fix
+
+Added a guard at the top of the `createMany` call in `sendMessage()`. Any message whose text starts with `'Please rewrite this review'` is considered a transient system instruction — it is still forwarded to pv-ai (so the AI can act on it), but neither the instruction nor its response is written to the DB.
+
+```typescript
+// reviews.service.ts — sendMessage()
+if (!message.startsWith('Please rewrite this review')) {
+  await this.prisma.reviewChatMessage.createMany({
+    data: [
+      { review_id: reviewId, role: 'user',      content: message            },
+      { review_id: reviewId, role: 'assistant', content: aiResponse.response },
+    ],
+  });
+}
+```
+
+This keeps the DB history clean regardless of how many times the user retries/rephrases. The original conversation is never overwritten.
+
+### Files changed
+
+| File | Lines changed |
+|---|---|
+| [src/reviews/reviews.service.ts](src/reviews/reviews.service.ts) | `sendMessage()`: wrapped `reviewChatMessage.createMany` in `if (!message.startsWith('Please rewrite this review'))` guard |
+| [src/reviews/reviews.service.spec.ts](src/reviews/reviews.service.spec.ts) | Added 1 test: `skips DB write when message is a rephrase instruction` — asserts `createMany` is not called when the message starts with the rephrase prefix |
+
+**Test count after fix:** 91 (all passing). Previous total was 90.
+
+---
+
+---
+
+## 19. startChat resume-transcript context fix (added 2026-05-30)
+
+### Bug
+
+The resume branch sent a generic placeholder prompt to pv-ai:
+
+```
+'Please continue helping refine this review based on our previous conversation.'
+```
+
+pv-ai received no review text. When it generated its opening message (e.g. "Your experience sounds great!") it was guessing based on the `previous_messages` — which only contain the user's raw transcript and earlier AI turns. If the user had written a mixed or negative review, pv-ai often got the sentiment wrong, undermining the user's confidence in the AI.
+
+### Fix
+
+The resume transcript now embeds the current `review.review_text` so the AI has the concrete review content in view before replying:
+
+```typescript
+const transcript = isNewSession
+  ? review.review_text
+  : `The current review text is: "${review.review_text}". Please continue helping the user refine this review based on our previous conversation. Do not summarize or change the sentiment — just be ready to help with edits.`;
+```
+
+The three explicit instructions at the end (`Do not summarize or change the sentiment — just be ready to help with edits.`) prevent the AI from launching into unsolicited rewrites when the user simply resumes.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| [src/reviews/reviews.service.ts](src/reviews/reviews.service.ts) | `startChat()`: resume branch transcript changed from static string to template literal embedding `review.review_text` |
+| [src/reviews/reviews.service.spec.ts](src/reviews/reviews.service.spec.ts) | Resume test assertion updated: `'Please continue…'` → backtick template referencing `mockReview.review_text` |
+
+**Test count unchanged: 90 (all passing).**
+
+---
+
+---
+
+## 20. startChat full simplification — remove previous_messages (added 2026-05-31)
+
+### Problem
+
+The approach introduced in Sections 11–17 and 19 (fetching up to 10 `review_chat_messages` rows, passing them as `previous_messages` to pv-ai) was causing corrupted conversation structure and confusing Groq. Root causes:
+
+- Passing raw DB rows as prior context sent duplicate or out-of-order turns to Groq.
+- The `isNewSession` / `existingMessages` branching was complex and fragile.
+- The dependency on pv-ai implementing `previous_messages` support (Section 12) was never landed.
+
+### Simplified approach
+
+`startChat()` no longer queries `review_chat_messages` at all. Instead it derives the session transcript directly from `review.review_text`:
+
+| Condition | Transcript sent to pv-ai |
+|---|---|
+| `review.review_text` is non-empty | `You previously helped the user write this review: "{text}". The user wants to continue refining it. Ask them what they would like to change.` |
+| `review.review_text` is empty | `''` (empty string — edge case for brand-new reviews with no content yet) |
+
+**No messages are written to the DB** by `startChat()`. Every real conversation turn continues to be saved by `sendMessage()` via `createMany`. `getChatHistory` and its DB table are unaffected.
+
+**pv-ai dependency removed:** `AiService.startChat()` no longer sends `previous_messages` in the request body. pv-ai sees a fresh `transcript` on every `/api/chat/start` call.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| [src/ai/ai.service.ts](src/ai/ai.service.ts) | `startChat()`: removed optional `previousMessages` parameter; removed `if (previousMessages && previousMessages.length > 0)` block that added `body.previous_messages` |
+| [src/reviews/reviews.service.ts](src/reviews/reviews.service.ts) | `startChat()`: removed `reviewChatMessage.findMany` query; removed `isNewSession` variable; replaced two-branch transcript with single ternary on `review.review_text`; dropped 7th arg (`existingMessages`) from `aiService.startChat` call; removed `if (isNewSession) { createMany }` block |
+| [src/reviews/reviews.service.spec.ts](src/reviews/reviews.service.spec.ts) | Test 1 (`builds correct listingContext…`): removed `reviewChatMessage.findMany` + `createMany` mock setup; updated `aiService.startChat` assertion to 6 args with resume-prompt transcript; replaced `createMany.toHaveBeenCalledWith(…)` with `not.toHaveBeenCalled()`. Test 2 renamed `resume: …` → `sends empty transcript when review has no text`: rewritten to use `review_text: ''`, verify empty string transcript, no DB writes. |
+
+**Test count: 91 (all passing). Supersedes Sections 11–17 and 19 for the startChat resume logic.**
+
+---
+
+---
+
+## 21. conversation_summary — persist and inject into resume (added 2026-05-31)
+
+### What changed
+
+pv-ai's `/api/chat/approve` endpoint already returns a `conversation_summary` string (a one-paragraph plain-text summary generated by a second Groq call). The BFF now:
+
+1. **Persists the summary** — `approveDraft()` writes `conversation_summary` to the `reviews` table alongside `review_text`.
+2. **Injects it into the next session** — `startChat()` weaves the stored summary into the resume transcript so Groq has a compact description of the prior conversation without needing to re-process raw message history.
+
+### Schema change
+
+New nullable column on `Review`:
+
+```prisma
+conversation_summary String?
+```
+
+Migration: `prisma/migrations/20260531012428_add_conversation_summary/migration.sql`
+
+### Transcript format
+
+| Condition | Transcript sent to pv-ai |
+|---|---|
+| `review_text` non-empty, summary present | `The current review text is: "{text}".\nContext from previous session:\n{summary}\nThe user wants to continue refining it. Ask them what they would like to change.` |
+| `review_text` non-empty, no summary | `The current review text is: "{text}".\nThe user wants to continue refining it. Ask them what they would like to change.` |
+| `review_text` empty | `''` |
+
+### Files changed
+
+| File | Change |
+|---|---|
+| [prisma/schema.prisma](prisma/schema.prisma) | `Review` model: added `conversation_summary String?` field |
+| [prisma/migrations/20260531012428_add_conversation_summary/](prisma/migrations/20260531012428_add_conversation_summary/) | Migration SQL adding nullable `conversation_summary` column to `reviews` table |
+| [src/ai/ai.service.ts](src/ai/ai.service.ts) | `approveDraft()`: changed from pass-through `return this.post(…)` to explicit mapping; renamed `improved_text` → `review_text` in return type; added `conversation_summary: data.conversation_summary ?? null` |
+| [src/reviews/reviews.service.ts](src/reviews/reviews.service.ts) | `approveDraft()`: `result.improved_text` → `result.review_text` (3 occurrences); added `conversation_summary: result.conversation_summary` to `prisma.review.update` data. `startChat()`: added `summaryContext` variable; updated transcript template to embed summary when present |
+| [src/reviews/reviews.service.spec.ts](src/reviews/reviews.service.spec.ts) | `mockApproveResult`: renamed `improved_text` → `review_text`, added `conversation_summary: null`. Existing `approveDraft` test: added `conversation_summary: null` to `prisma.review.update` assertion. New test: `saves conversation_summary to review when approve returns it`. `startChat` test 1: updated transcript assertion to new template. Two new `startChat` tests: `includes conversation_summary in resume transcript when present`, `builds resume transcript without summary when conversation_summary is null` |
+
+**Test count: 94 (all passing). Previous total was 91.**
+
+---
+
+*This document reflects the state of the project as of 2026-05-31.*
