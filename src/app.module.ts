@@ -32,7 +32,7 @@ import { NetworksModule } from './networks/networks.module';
               tls: isTls ? {} : undefined,
               maxRetriesPerRequest: null,
               enableReadyCheck: false,
-              family: 4,
+              family: 0,
             },
           };
         }
