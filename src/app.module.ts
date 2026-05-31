@@ -21,7 +21,15 @@ import { NetworksModule } from './networks/networks.module';
       useFactory: (configService: ConfigService) => {
         const redisUrl = configService.get<string>('REDIS_URL');
         if (redisUrl) {
-          return { connection: { url: redisUrl } };
+          const url = new URL(redisUrl);
+          return {
+            connection: {
+              host: url.hostname,
+              port: parseInt(url.port, 10),
+              password: url.password || undefined,
+              username: url.username || undefined,
+            },
+          };
         }
         return {
           connection: {
