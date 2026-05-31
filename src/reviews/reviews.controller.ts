@@ -33,6 +33,7 @@ import { CreateReviewDto } from './dto/create-review.dto';
 import { UpdateReviewDto } from './dto/update-review.dto';
 import { QueryReviewsDto } from './dto/query-reviews.dto';
 import { PublishReviewDto } from './dto/publish-review.dto';
+import { StartChatDto } from './dto/start-chat.dto';
 
 @ApiTags('reviews')
 @ApiBearerAuth('access-token')
@@ -351,8 +352,8 @@ export class ReviewsController {
   })
   @ApiNotFoundResponse({ description: 'Review not found' })
   @ApiForbiddenResponse({ description: 'Review belongs to another user' })
-  startChat(@Request() req, @Param('id') id: string) {
-    return this.reviewsService.startChat(req.user.user_id, id);
+  startChat(@Request() req, @Param('id') id: string, @Body() body: StartChatDto) {
+    return this.reviewsService.startChat(req.user.user_id, id, body);
   }
 
   @Post(':id/chat/message')

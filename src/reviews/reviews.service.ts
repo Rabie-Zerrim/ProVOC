@@ -13,6 +13,7 @@ import { UpdateReviewDto } from './dto/update-review.dto';
 import { QueryReviewsDto } from './dto/query-reviews.dto';
 import { PublishReviewDto } from './dto/publish-review.dto';
 import { POSTING_QUEUE, PostingJobData } from './posting.constants';
+import { StartChatDto } from './dto/start-chat.dto';
 
 const REVIEW_STATUSES = ['draft', 'pending', 'published', 'posted'] as const;
 type ReviewStatus = (typeof REVIEW_STATUSES)[number];
@@ -477,7 +478,7 @@ export class ReviewsService {
     return { transcript: result.transcript, detected_language: result.detected_language, review_id: reviewId };
   }
 
-  async startChat(userId: string, reviewId: string) {
+  async startChat(userId: string, reviewId: string, body?: StartChatDto) {
     const review = await this.prisma.review.findFirst({
       where: { review_id: reviewId, deleted_at: null },
       include: {
@@ -501,6 +502,7 @@ export class ReviewsService {
         max_chars: l.network.preferences?.max_chars_post ?? null,
         supports_api_posting: l.network.preferences?.supports_api_posting ?? false,
       })),
+      context_note: body?.listing_context?.context_note ?? '',
     };
 
     const summaryContext = review.conversation_summary
