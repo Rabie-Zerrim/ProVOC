@@ -10,6 +10,11 @@ export class AppController {
     return this.appService.getHello();
   }
 
+  @Get('health')
+  health() {
+    return { status: 'ok' };
+  }
+
   @Get('test-db')
   testDb() {
     return this.appService.testDb();
