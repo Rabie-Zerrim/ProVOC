@@ -57,9 +57,16 @@ export class ListingsService {
     for (const term of terms) {
       try {
         const qs = new URLSearchParams({ q: term, format: 'json', limit: '15', viewbox, bounded: '1' });
+        // Nominatim usage policy: identify the app with User-Agent + contact email,
+        // include Accept-Language, and stay under 1 request/second.
+        // https://operations.osmfoundation.org/policies/nominatim/
         const { data } = await firstValueFrom(
           this.http.get(`https://nominatim.openstreetmap.org/search?${qs.toString()}`, {
-            headers: { 'User-Agent': 'ProVOCApp/1.0' },
+            headers: {
+              'User-Agent': 'ProVOC/1.0 (contact@provoc.app)',
+              'Accept-Language': 'en',
+              'Referer': 'https://provoc-production.up.railway.app',
+            },
             timeout: 15000,
           }),
         );
