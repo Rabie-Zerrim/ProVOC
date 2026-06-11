@@ -53,7 +53,6 @@ export class ListingsService {
           url: '',
           photo_reference: place.photos?.[0]?.name ?? null,
         };
-        console.log('PHOTO_REF:', place.photos?.[0]?.name ?? 'NO_PHOTO');
       });
       return mapped;
     } catch (err: any) {
