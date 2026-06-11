@@ -82,18 +82,14 @@ describe('ListingsService', () => {
       expect(calledUrl).toContain('places.googleapis.com/v1/places:searchText');
       expect(calledUrl).toContain('key=test-google-key');
       expect(result).toEqual({
-        results: [
-          {
-            id: 'ChIJabc123',
-            name: 'Test Restaurant',
-            address: '123 Main St, San Diego, CA',
-            rating: 4.5,
-            lat: 32.7157,
-            lng: -117.1611,
-            network: 'google',
-            photo_reference: 'places/ChIJabc123/photos/photo1',
-          },
-        ],
+        google: {
+          id: 'ChIJabc123',
+          name: 'Test Restaurant',
+          formattedAddress: '123 Main St, San Diego, CA',
+          globalRating: 4.5,
+          reviewCount: 0,
+          url: '',
+        },
       });
     });
 
