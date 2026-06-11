@@ -89,6 +89,7 @@ describe('ListingsService', () => {
           globalRating: 4.5,
           reviewCount: 0,
           url: '',
+          photo_reference: 'places/ChIJabc123/photos/photo1',
         },
       });
     });

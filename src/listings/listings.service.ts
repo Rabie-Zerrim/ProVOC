@@ -51,6 +51,7 @@ export class ListingsService {
           globalRating: place.rating ?? 0,
           reviewCount: 0,
           url: '',
+          photo_reference: place.photos?.[0]?.name ?? null,
         };
       });
       return mapped;
