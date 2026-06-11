@@ -21,13 +21,13 @@ export class ListingsController {
   constructor(private readonly listingsService: ListingsService) {}
 
   @Get('search')
-  @ApiOperation({ summary: 'Match a business across networks via Zembra /listing/match' })
-  @ApiQuery({ name: 'name', required: true, example: 'Harmony Cuisine 2B1' })
-  @ApiQuery({ name: 'address', required: true, example: '3904 Convoy St 117, San Diego, CA 92111' })
-  @ApiQuery({ name: 'networks[]', required: false, example: 'opentable', isArray: true })
-  @ApiOkResponse({ description: 'Matched listings from Zembra' })
+  @ApiOperation({ summary: 'Search businesses via Google Places Text Search API' })
+  @ApiQuery({ name: 'q', required: true, example: 'restaurants near downtown' })
+  @ApiQuery({ name: 'lat', required: false, example: '37.7749' })
+  @ApiQuery({ name: 'lng', required: false, example: '-122.4194' })
+  @ApiOkResponse({ description: 'Matched businesses from Google Places' })
   search(@Query() dto: SearchListingsDto) {
-    return this.listingsService.search(dto.name, dto.address, dto.networks);
+    return this.listingsService.search(dto.q, dto.lat, dto.lng);
   }
 
   @Get('nearby')

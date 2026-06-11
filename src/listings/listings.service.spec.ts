@@ -27,7 +27,7 @@ const mockPrefs = { network_pref_id: 'uuid-prefs-1', network_id: 'uuid-net-1' };
 
 describe('ListingsService', () => {
   let service: ListingsService;
-  let httpService: jest.Mocked<Pick<HttpService, 'get'>>;
+  let httpService: jest.Mocked<Pick<HttpService, 'get' | 'post'>>;
   let prisma: {
     listing: { findUnique: jest.Mock; findFirst: jest.Mock; create: jest.Mock; findMany: jest.Mock; update: jest.Mock };
     network: { findFirst: jest.Mock; create: jest.Mock };
@@ -46,14 +46,13 @@ describe('ListingsService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ListingsService,
-        { provide: HttpService, useValue: { get: jest.fn() } },
+        { provide: HttpService, useValue: { get: jest.fn(), post: jest.fn() } },
         { provide: PrismaService, useValue: prisma },
         {
           provide: ConfigService,
           useValue: {
             get: (key: string) => {
-              if (key === 'ZEMBRA_API_KEY') return 'test-key';
-              if (key === 'ZEMBRA_BASE_URL') return 'https://api.zembra.io';
+              if (key === 'GOOGLE_PLACES_API_KEY') return 'test-google-key';
               return undefined;
             },
           },
@@ -66,27 +65,49 @@ describe('ListingsService', () => {
   });
 
   describe('search', () => {
-    it('calls Zembra /listing/match with name, address and networks', async () => {
-      const mockResults = [{ network: 'opentable', url: 'https://opentable.com/xyz' }];
-      (httpService.get as jest.Mock).mockReturnValue(of({ data: mockResults }));
+    it('calls Google Places Text Search and maps response correctly', async () => {
+      const mockPlace = {
+        id: 'ChIJabc123',
+        displayName: { text: 'Test Restaurant' },
+        formattedAddress: '123 Main St, San Diego, CA',
+        rating: 4.5,
+        location: { latitude: 32.7157, longitude: -117.1611 },
+        photos: [{ name: 'places/ChIJabc123/photos/photo1' }],
+      };
+      (httpService.post as jest.Mock).mockReturnValue(of({ data: { places: [mockPlace] } }));
 
-      const result = await service.search('Harmony Cuisine 2B1', '3904 Convoy St, San Diego', ['opentable']);
+      const result = await service.search('restaurants San Diego');
 
-      const calledUrl: string = (httpService.get as jest.Mock).mock.calls[0][0];
-      expect(calledUrl).toContain('/listing/match');
-      expect(calledUrl).toContain('name=Harmony+Cuisine+2B1');
-      expect(calledUrl).toContain('networks%5B%5D=opentable');
-      expect(result).toEqual(mockResults);
+      const calledUrl: string = (httpService.post as jest.Mock).mock.calls[0][0];
+      expect(calledUrl).toContain('places.googleapis.com/v1/places:searchText');
+      expect(calledUrl).toContain('key=test-google-key');
+      expect(result).toEqual({
+        results: [
+          {
+            id: 'ChIJabc123',
+            name: 'Test Restaurant',
+            address: '123 Main St, San Diego, CA',
+            rating: 4.5,
+            lat: 32.7157,
+            lng: -117.1611,
+            network: 'google',
+            photo_reference: 'places/ChIJabc123/photos/photo1',
+          },
+        ],
+      });
     });
 
-    it('calls Zembra without networks when not provided', async () => {
-      (httpService.get as jest.Mock).mockReturnValue(of({ data: [] }));
+    it('includes locationBias when lat and lng are provided', async () => {
+      (httpService.post as jest.Mock).mockReturnValue(of({ data: { places: [] } }));
 
-      await service.search('Sushi Place', '123 Main St');
+      await service.search('sushi', '32.7157', '-117.1611');
 
-      const calledUrl: string = (httpService.get as jest.Mock).mock.calls[0][0];
-      expect(calledUrl).toContain('/listing/match');
-      expect(calledUrl).not.toContain('networks');
+      const calledBody = (httpService.post as jest.Mock).mock.calls[0][1];
+      expect(calledBody.textQuery).toBe('sushi');
+      expect(calledBody.locationBias.circle.center).toEqual({
+        latitude: 32.7157,
+        longitude: -117.1611,
+      });
     });
   });
 

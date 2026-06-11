@@ -15,32 +15,47 @@ const SLUG_TO_NAME: Record<string, string> = {
 
 @Injectable()
 export class ListingsService {
-  private readonly apiKey: string;
-  private readonly baseUrl: string;
+  private readonly googlePlacesApiKey: string;
 
   constructor(
     private readonly http: HttpService,
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
   ) {
-    this.apiKey = this.config.get<string>('ZEMBRA_API_KEY') ?? '';
-    this.baseUrl = this.config.get<string>('ZEMBRA_BASE_URL') ?? 'https://api.zembra.io';
+    this.googlePlacesApiKey = this.config.get<string>('GOOGLE_PLACES_API_KEY') ?? '';
   }
 
-  async search(name: string, address: string, networks?: string[]) {
-    const qs = new URLSearchParams({ name, address });
-    networks?.forEach((n) => qs.append('networks[]', n));
+  async search(q: string, lat?: string, lng?: string) {
+    const body: Record<string, any> = { textQuery: q };
+
+    if (lat && lng) {
+      body.locationBias = {
+        circle: {
+          center: { latitude: parseFloat(lat), longitude: parseFloat(lng) },
+          radius: 5000.0,
+        },
+      };
+    }
 
     try {
-      const { data } = await firstValueFrom(
-        this.http.get(`${this.baseUrl}/listing/match?${qs.toString()}`, {
-          headers: { Authorization: `Bearer ${this.apiKey}` },
-        }),
-      );
-      return data;
+      const fields = 'places.id,places.displayName,places.formattedAddress,places.rating,places.location,places.photos';
+      const url = `https://places.googleapis.com/v1/places:searchText?key=${this.googlePlacesApiKey}&fields=${fields}`;
+      const { data } = await firstValueFrom(this.http.post(url, body));
+      return {
+        results: (data.places ?? []).map((place: any) => ({
+          id: place.id,
+          name: place.displayName?.text ?? '',
+          address: place.formattedAddress ?? '',
+          rating: place.rating ?? 0,
+          lat: place.location?.latitude ?? 0,
+          lng: place.location?.longitude ?? 0,
+          network: 'google',
+          photo_reference: place.photos?.[0]?.name ?? null,
+        })),
+      };
     } catch (err: any) {
       const status = err?.response?.status;
-      if (status === 404 || status === 422) return { data: {} };
+      if (status === 400 || status === 404) return { results: [] };
       throw err;
     }
   }
