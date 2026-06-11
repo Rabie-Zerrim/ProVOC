@@ -41,21 +41,22 @@ export class ListingsService {
       const fields = 'places.id,places.displayName,places.formattedAddress,places.rating,places.location,places.photos';
       const url = `https://places.googleapis.com/v1/places:searchText?key=${this.googlePlacesApiKey}&fields=${fields}`;
       const { data } = await firstValueFrom(this.http.post(url, body));
-      return {
-        results: (data.places ?? []).map((place: any) => ({
+      const mapped: Record<string, any> = {};
+      (data.places ?? []).forEach((place: any, index: number) => {
+        const key = index === 0 ? 'google' : `google_${index}`;
+        mapped[key] = {
           id: place.id,
           name: place.displayName?.text ?? '',
-          address: place.formattedAddress ?? '',
-          rating: place.rating ?? 0,
-          lat: place.location?.latitude ?? 0,
-          lng: place.location?.longitude ?? 0,
-          network: 'google',
-          photo_reference: place.photos?.[0]?.name ?? null,
-        })),
-      };
+          formattedAddress: place.formattedAddress ?? '',
+          globalRating: place.rating ?? 0,
+          reviewCount: 0,
+          url: '',
+        };
+      });
+      return mapped;
     } catch (err: any) {
       const status = err?.response?.status;
-      if (status === 400 || status === 404) return { results: [] };
+      if (status === 400 || status === 404) return {};
       throw err;
     }
   }
