@@ -19,6 +19,21 @@ export class AiService {
     this.bffSecret = this.configService.get<string>('PJAI_SHARED_SECRET', '');
   }
 
+  private async get<T>(path: string, headers?: Record<string, string>): Promise<T> {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.get<T>(`${this.baseUrl}${path}`, { headers }),
+      );
+      return response.data;
+    } catch (err) {
+      const axiosErr = err as AxiosError;
+      if (axiosErr.response) {
+        throw new HttpException(axiosErr.response.data as object, HttpStatus.BAD_GATEWAY);
+      }
+      throw new HttpException('AI service temporarily unavailable', HttpStatus.SERVICE_UNAVAILABLE);
+    }
+  }
+
   private async post<T>(path: string, data: unknown, headers?: Record<string, string>): Promise<T> {
     try {
       const response = await firstValueFrom(
@@ -135,5 +150,14 @@ export class AiService {
 
   async endSession(sessionId: string, userId: string): Promise<{ success: boolean }> {
     return this.post('/api/chat/end', { session_id: sessionId }, await this.getAuthHeaders(userId));
+  }
+
+  async getRecommendations(userId: string): Promise<any[]> {
+    try {
+      const result = await this.get<any>('/api/recommendations', await this.getAuthHeaders(userId));
+      return Array.isArray(result) ? result : [];
+    } catch {
+      return [];
+    }
   }
 }

@@ -9,6 +9,7 @@ import { ListingsModule } from './listings/listings.module';
 import { ReviewsModule } from './reviews/reviews.module';
 import { FacebookModule } from './facebook/facebook.module';
 import { NetworksModule } from './networks/networks.module';
+import { RecommendationsModule } from './recommendations/recommendations.module';
 
 @Module({
   imports: [
@@ -54,6 +55,7 @@ import { NetworksModule } from './networks/networks.module';
     ReviewsModule,
     FacebookModule,
     NetworksModule,
+    RecommendationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
