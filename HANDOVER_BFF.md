@@ -82,8 +82,9 @@ npm run start:dev
 | `REDIS_HOST` | `localhost` | Yes | BullMQ Redis host |
 | `REDIS_PORT` | `6379` | Yes | BullMQ Redis port |
 | `REDIS_PASSWORD` | (empty) | No | Redis auth password |
-| `ZEMBRA_API_KEY` | Bearer token from Zembra dashboard | Yes | Authenticates calls to Zembra |
-| `ZEMBRA_BASE_URL` | `https://localapi.zembra.io` (dev) / `https://beta.api.zembra.io` (staging) | Yes | Zembra base URL |
+| `ZEMBRA_API_KEY` | Bearer token from Zembra dashboard | No (dead config — kept in Railway but unused since Google Places migration; see Section 22) | Previously authenticated calls to Zembra |
+| `ZEMBRA_BASE_URL` | `https://localapi.zembra.io` (dev) / `https://beta.api.zembra.io` (staging) | No (dead config — see Section 22) | Previously used Zembra base URL |
+| `GOOGLE_PLACES_API_KEY` | Google Cloud API key with Places API (New) enabled | Yes | Authenticates calls to Google Places Text Search (`POST /v1/places:searchText`) |
 | `FASTAPI_URL` | `http://localhost:8000` | Yes | URL of the `pv-ai` FastAPI sidecar |
 | `FACEBOOK_TEST_TOKEN` | User access token from Meta Graph Explorer | Yes (posting) | Access token used directly by `PostingWorker` to call `POST /v21.0/me/feed` for the demo; no OAuth flow needed |
 
@@ -129,7 +130,7 @@ Backend waits for both `database` and `redis` health-checks before starting. The
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/listings/search` | JWT | Calls Zembra `/listing/match` with `?name=&address=&networks[]=`; returns raw Zembra response |
+| `GET` | `/listings/search` | JWT | Calls Google Places Text Search (`POST /v1/places:searchText`) with `?q=&lat=&lng=`; returns record-keyed results `{ google, google_1, … }`. See Section 22 for full details. |
 | `GET` | `/listings/:id` | JWT | Fetches a saved listing; response always includes `networks: [{ network_id, name, slug }]` (empty array if no active listings) |
 | `POST` | `/listings` | JWT | Saves a Zembra result: upserts `business` + `network` + `listing` records. Accepts optional `network_slug` to resolve an existing network by slug instead of creating one |
 
@@ -1487,4 +1488,156 @@ Migration: `prisma/migrations/20260531012428_add_conversation_summary/migration.
 
 ---
 
-*This document reflects the state of the project as of 2026-05-31.*
+---
+
+## 22. Search migration to Google Places API (New) (added 2026-06-11)
+
+### What changed
+
+`GET /listings/search` no longer calls the Zembra API. It now calls the **Google Places API (New)** Text Search endpoint directly. Zembra is entirely removed from the search path; `ZEMBRA_API_KEY` and `ZEMBRA_BASE_URL` remain in Railway env vars as dead config but are not used.
+
+### New request shape
+
+`SearchListingsDto` was rewritten. Old fields (`name`, `address`, `networks[]`) are replaced:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `q` | `string` | Yes | Free-text query (business name, category, location) |
+| `lat` | `string` | No | Latitude for location bias |
+| `lng` | `string` | No | Longitude for location bias |
+
+Example:
+```
+GET /listings/search?q=Harmony+Cuisine+San+Diego&lat=32.8122&lng=-117.1497
+Authorization: Bearer <token>
+```
+
+### How it works
+
+`ListingsService.search()` builds a POST body for `https://places.googleapis.com/v1/places:searchText`:
+
+- Always sets `textQuery: q`.
+- If `lat` and `lng` are both provided, adds a `locationBias.circle` (radius 5000 m) so nearby results rank higher.
+- Requests fields: `places.id`, `places.displayName`, `places.formattedAddress`, `places.rating`, `places.location`, `places.photos`.
+- The API key is passed as a query parameter (`?key=GOOGLE_PLACES_API_KEY`).
+
+### Response format
+
+Results are returned as a **record keyed by position**, not an array:
+
+```json
+{
+  "google":   { "id": "ChIJ...", "name": "...", "formattedAddress": "...", "globalRating": 4.8, "reviewCount": 0, "url": "", "photo_reference": "places/.../photos/..." },
+  "google_1": { ... },
+  "google_2": { ... }
+}
+```
+
+- First result key is always `"google"`; subsequent results are `"google_1"`, `"google_2"`, etc.
+- `photo_reference` is `place.photos[0].name` from the Google Places New API (a resource path, not a legacy photo reference string). It is `null` when the place has no photos.
+- `reviewCount` is always `0` — Google Places Text Search does not return a review count in this field set.
+- `url` is always `''` — the direct place URL is not requested; the frontend constructs deep-links from `id`.
+
+### Environment variable required
+
+| Variable | Purpose |
+|---|---|
+| `GOOGLE_PLACES_API_KEY` | Google Cloud API key with **Places API (New)** enabled in the Google Cloud Console |
+
+`ZEMBRA_API_KEY` and `ZEMBRA_BASE_URL` are no longer required for search but remain in existing Railway deployments as dead config.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| [src/listings/listings.service.ts](src/listings/listings.service.ts) | `search()`: replaced Zembra HTTP call with Google Places `POST /v1/places:searchText`; added `locationBias` block; mapped response to record-keyed format with `photo_reference` |
+| [src/listings/dto/search-listings.dto.ts](src/listings/dto/search-listings.dto.ts) | Replaced `name`, `address`, `networks[]` with `q` (required), `lat`, `lng` (optional) |
+| [src/listings/listings.service.spec.ts](src/listings/listings.service.spec.ts) | All search tests rewritten for Google Places response format |
+
+**Test count: 94 (all passing).**
+
+---
+
+---
+
+## 23. Nominatim User-Agent fix for nearby businesses (added 2026-06-11)
+
+### Problem
+
+The nearby-businesses flow calls the **Nominatim OSM** reverse-geocoding API. On Railway (cloud environment), requests without a `User-Agent` header were blocked by Nominatim's usage policy, returning an error instead of location data.
+
+### Fix
+
+Added required HTTP headers to all Nominatim requests in [src/listings/listings.service.ts](src/listings/listings.service.ts):
+
+```typescript
+headers: {
+  'User-Agent': 'pv-bff/1.0 (provoc-app)',
+  'Accept-Language': 'en',
+  'Referer': 'https://provoc.app',
+}
+```
+
+These three headers satisfy Nominatim's usage policy:
+- `User-Agent` identifies the application (required — Nominatim blocks anonymous requests).
+- `Accept-Language` standardises the language of returned place names.
+- `Referer` provides additional identification context.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| [src/listings/listings.service.ts](src/listings/listings.service.ts) | Nominatim `GET` call: added `User-Agent`, `Accept-Language`, `Referer` headers |
+
+---
+
+---
+
+## 24. pv-ai /pending-reviews — real Redis data (added 2026-06-11)
+
+### Problem
+
+The `GET /pending-reviews` endpoint in the `pv-ai` sidecar (`yelp.py`) previously returned an empty array unconditionally, making the pending-reviews feature non-functional.
+
+### Fix
+
+The endpoint now reads real data from Redis:
+
+1. Scans all `session:*` keys in Redis.
+2. Deserialises each session and filters by `status` (pending) and `user_id` (owner-scoped).
+3. Returns the matching sessions as the pending-reviews list.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `yelp.py` (pv-ai sidecar) | `/pending-reviews` handler: replaced static `return []` with Redis scan + filter logic |
+
+---
+
+---
+
+## 25. pv-ai /transcription — session persistence fix (added 2026-06-11)
+
+### Problem
+
+The `POST /transcription` endpoint in the `pv-ai` sidecar (`yelp.py`) was an echo stub — it returned the incoming data without persisting it. As a result, `voiceTranscription` and `detected_language` were never saved to the Redis session, so subsequent chat turns had no access to the transcribed text.
+
+### Fix
+
+The endpoint now:
+
+1. Loads the existing Redis session via `get_session(session_id)`.
+2. Returns **404** if the session is not found.
+3. Returns **503** if Redis is unavailable.
+4. On success, writes `voiceTranscription` and `detected_language` to the session object and persists it via `save_session()`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `yelp.py` (pv-ai sidecar) | `/transcription` handler: replaced echo stub with `get_session` → update fields → `save_session`; added 404 (session not found) and 503 (Redis unavailable) error paths |
+
+---
+
+*This document reflects the state of the project as of 2026-06-12.*
