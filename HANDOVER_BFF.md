@@ -1640,4 +1640,68 @@ The endpoint now:
 
 ---
 
-*This document reflects the state of the project as of 2026-06-12.*
+---
+
+## 26. GET /recommendations proxy endpoint (added 2026-06-13)
+
+### What was added
+
+New endpoint that proxies `GET /api/recommendations` from the `pv-ai` sidecar to authenticated BFF clients. If pv-ai is unreachable the endpoint degrades gracefully and returns `[]` instead of propagating an error.
+
+### Endpoint
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/recommendations` | JWT | Forwards to `{FASTAPI_URL}/api/recommendations`; returns pv-ai's response or `[]` on failure |
+
+### Authentication to pv-ai
+
+Uses the same relay token system as all other pv-ai proxy calls (see Section 8 — pv-ai JWT relay):
+
+1. BFF calls `POST {FASTAPI_URL}/api/auth/token/relay` with `X-BFF-Secret: {PJAI_SHARED_SECRET}` and `{ user_id }`.
+2. pv-ai returns a 30-minute Bearer token.
+3. The BFF caches it for 25 minutes per user (existing `AiService` token cache).
+4. `GET /api/recommendations` is called with `Authorization: Bearer <relay_token>`.
+5. If **anything** throws (relay down, pv-ai down, non-2xx, network error), `getRecommendations()` catches it and returns `[]` — no error is propagated to the client.
+
+### Files changed / created
+
+| File | Change |
+|---|---|
+| [src/ai/ai.service.ts](src/ai/ai.service.ts) | Added `private async get<T>()` helper (mirrors existing `post<T>()`; maps non-2xx → 502, network errors → 503). Added `async getRecommendations(userId)`: calls `GET /api/recommendations` via `get<T>()` with relay auth headers; wraps entire call in `try/catch` that returns `[]` on any error |
+| [src/recommendations/recommendations.controller.ts](src/recommendations/recommendations.controller.ts) | New file. `@Controller('recommendations')`, `@UseGuards(JwtAuthGuard)`. Single `@Get()` handler: reads `req.user.user_id` and delegates to `aiService.getRecommendations()` |
+| [src/recommendations/recommendations.module.ts](src/recommendations/recommendations.module.ts) | New file. Imports `AiModule`; declares `RecommendationsController` |
+| [src/recommendations/recommendations.controller.spec.ts](src/recommendations/recommendations.controller.spec.ts) | New file. 2 unit tests: happy path (pv-ai returns data array) and graceful degradation (returns `[]`) |
+| [src/app.module.ts](src/app.module.ts) | `RecommendationsModule` added to imports array |
+
+**Commit:** `f17a97e`
+
+**Test count: 96 (all passing). Previous total was 94.**
+
+---
+
+---
+
+## 27. Railway deployment note — stale image can produce 401 on new routes (added 2026-06-13)
+
+### What was observed
+
+After adding `GET /recommendations` (commit `f17a97e`) and pushing to `dev`, the endpoint returned **401** on Railway while `GET /reviews` and `GET /listings/nearby` returned **200** with the identical token. The NestJS guard code and module wiring were confirmed identical to every other authenticated endpoint.
+
+### Root cause
+
+Railway was still serving the **previous image** that predated commit `f17a97e`. The old image has no `/recommendations` route. Railway's infrastructure (reverse proxy / catch-all layer) returned **401** for the unknown path rather than **404**. This made the error look like an auth failure in the new code when the new code had not yet been deployed.
+
+### Rule for future work
+
+> **After adding any new route, always verify on Railway's deployment dashboard that the new commit is the active revision before debugging 401 / 404 errors on that route.** A 401 with visually correct auth code is a strong signal that Railway is running a stale image without the new route registered.
+
+Checklist:
+1. Push commit → confirm Railway dashboard shows the new commit SHA building/deploying.
+2. Wait for "Deploy successful" status.
+3. Only then test the new endpoint.
+4. If still 401: check NestJS guard wiring. If 404: check module registration.
+
+---
+
+*This document reflects the state of the project as of 2026-06-13.*
