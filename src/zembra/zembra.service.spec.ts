@@ -131,7 +131,7 @@ describe('ZembraService', () => {
       expect(urls[1]).not.toContain('google');
     });
 
-    it('sends Authorization and Host headers on each request', async () => {
+    it('sends Authorization header without a Host header override on each request', async () => {
       httpService.get
         .mockReturnValueOnce(of({ data: makeNetworkData('google') }))
         .mockReturnValueOnce(of({ data: makeNetworkData('yelp') }));
@@ -140,7 +140,7 @@ describe('ZembraService', () => {
 
       const headers = httpService.get.mock.calls[0][1].headers;
       expect(headers.Authorization).toBe('Bearer test-token');
-      expect(headers.Host).toBe('localapi.zembra.io');
+      expect(headers.Host).toBeUndefined();
     });
   });
 });

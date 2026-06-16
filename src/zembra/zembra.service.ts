@@ -9,7 +9,6 @@ const NETWORKS = ['google', 'yelp'] as const;
 export class ZembraService {
   private readonly apiUrl: string;
   private readonly apiToken: string;
-  private readonly hostHeader: string;
 
   constructor(
     private readonly http: HttpService,
@@ -17,7 +16,6 @@ export class ZembraService {
   ) {
     this.apiUrl = this.config.get<string>('ZEMBRA_API_URL') ?? '';
     this.apiToken = this.config.get<string>('ZEMBRA_API_TOKEN') ?? '';
-    this.hostHeader = this.config.get<string>('ZEMBRA_HOST_HEADER') ?? '';
   }
 
   async matchListing(name: string, address: string) {
@@ -48,7 +46,6 @@ export class ZembraService {
         this.http.get(`${this.apiUrl}/listing/match?${params.toString()}`, {
           headers: {
             Authorization: `Bearer ${this.apiToken}`,
-            Host: this.hostHeader,
           },
         }),
       );
