@@ -651,6 +651,17 @@ export class ReviewsService {
     }
   }
 
+  private extractYelpLinkFromExternalUrl(externalUrl: string | null | undefined): string | null {
+    if (!externalUrl) return null;
+    try {
+      const parsed = new URL(externalUrl);
+      const isYelpDomain = /(^|\.)yelp\.[a-z.]+$/.test(parsed.hostname);
+      return isYelpDomain ? externalUrl : null;
+    } catch {
+      return null;
+    }
+  }
+
   async getPublishLink(userId: string, reviewId: string, platformId: string) {
     const review = await this.prisma.review.findFirst({
       where: { review_id: reviewId, deleted_at: null },
@@ -684,11 +695,15 @@ export class ReviewsService {
     const looksLikeGooglePlaceId =
       networkName !== 'Google' || GOOGLE_PLACE_ID_PATTERN.test(listing.external_listing_id ?? '');
 
+    const looksLikeYelpId =
+      networkName !== 'Yelp' || !(listing.external_listing_id ?? '').startsWith('zembra-');
+
     const hasValidId =
       !!listing.external_listing_id &&
       !listing.external_listing_id.startsWith('osm-') &&
       !listing.external_listing_id.startsWith('manual-') &&
-      looksLikeGooglePlaceId;
+      looksLikeGooglePlaceId &&
+      looksLikeYelpId;
 
     let url: string | null = null;
 
@@ -721,6 +736,9 @@ export class ReviewsService {
           ? `https://search.google.com/local/writereview?placeid=${realPlaceId}`
           : null;
       }
+    } else if (networkName === 'Yelp') {
+      const linkFromExternalUrl = this.extractYelpLinkFromExternalUrl(listing.external_url);
+      url = linkFromExternalUrl ?? `https://www.yelp.com/writeareview/biz/${extId}`;
     }
 
     let account = await this.prisma.userPlatformAccount.findFirst({
