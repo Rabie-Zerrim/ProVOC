@@ -6,6 +6,9 @@ import {
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { HttpService } from '@nestjs/axios';
+import { ConfigService } from '@nestjs/config';
+import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../prisma/prisma.service';
 import { AiService } from '../ai/ai.service';
 import { CreateReviewDto } from './dto/create-review.dto';
@@ -18,12 +21,16 @@ import { StartChatDto } from './dto/start-chat.dto';
 const REVIEW_STATUSES = ['draft', 'pending', 'published', 'posted'] as const;
 type ReviewStatus = (typeof REVIEW_STATUSES)[number];
 
+const GOOGLE_PLACE_ID_PATTERN = /^ChIJ[A-Za-z0-9_-]+$/;
+
 @Injectable()
 export class ReviewsService {
   constructor(
     private readonly prisma: PrismaService,
     @InjectQueue(POSTING_QUEUE) private readonly postingQueue: Queue,
     private readonly aiService: AiService,
+    private readonly http: HttpService,
+    private readonly config: ConfigService,
   ) {}
 
   async create(userId: string, dto: CreateReviewDto) {
@@ -604,10 +611,50 @@ export class ReviewsService {
     return { ...result, review_id: reviewId };
   }
 
+  private async lookupGooglePlaceId(
+    name: string,
+    latitude: number | null,
+    longitude: number | null,
+  ): Promise<string | null> {
+    try {
+      const body: Record<string, any> = { textQuery: name };
+      if (latitude != null && longitude != null) {
+        body.locationBias = {
+          circle: {
+            center: { latitude, longitude },
+            radius: 5000.0,
+          },
+        };
+      }
+      const apiKey = this.config.get<string>('GOOGLE_PLACES_API_KEY');
+      const fields = 'places.id';
+      const url = `https://places.googleapis.com/v1/places:searchText?key=${apiKey}&fields=${fields}`;
+      const { data } = await firstValueFrom(this.http.post(url, body));
+      return data?.places?.[0]?.id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private extractGoogleLinkFromExternalUrl(externalUrl: string | null | undefined): string | null {
+    if (!externalUrl) return null;
+    try {
+      const parsed = new URL(externalUrl);
+      const placeIdParam = parsed.searchParams.get('placeid') ?? parsed.searchParams.get('place_id');
+      if (placeIdParam && GOOGLE_PLACE_ID_PATTERN.test(placeIdParam)) {
+        return `https://search.google.com/local/writereview?placeid=${placeIdParam}`;
+      }
+      const isGoogleDomain = /(^|\.)google\.[a-z.]+$/.test(parsed.hostname);
+      return isGoogleDomain ? externalUrl : null;
+    } catch {
+      return null;
+    }
+  }
+
   async getPublishLink(userId: string, reviewId: string, platformId: string) {
     const review = await this.prisma.review.findFirst({
       where: { review_id: reviewId, deleted_at: null },
-      include: { business: { select: { name: true } } },
+      include: { business: { select: { name: true, latitude: true, longitude: true } } },
     });
     if (!review) throw new NotFoundException(`Review ${reviewId} not found`);
     if (review.user_id !== userId) throw new ForbiddenException('Access denied');
@@ -634,10 +681,14 @@ export class ReviewsService {
     const extId = listing.external_listing_id ?? '';
     const bizName = review.business.name;
 
+    const looksLikeGooglePlaceId =
+      networkName !== 'Google' || GOOGLE_PLACE_ID_PATTERN.test(listing.external_listing_id ?? '');
+
     const hasValidId =
       !!listing.external_listing_id &&
       !listing.external_listing_id.startsWith('osm-') &&
-      !listing.external_listing_id.startsWith('manual-');
+      !listing.external_listing_id.startsWith('manual-') &&
+      looksLikeGooglePlaceId;
 
     let url: string | null = null;
 
@@ -657,6 +708,18 @@ export class ReviewsService {
           : `https://www.trustpilot.com/evaluate/${encodeURIComponent(bizName.toLowerCase().replace(/\s+/g, '-'))}`;
       } else {
         url = `https://maps.google.com/?q=${encodeURIComponent(bizName)}`;
+      }
+    } else if (networkName === 'Google') {
+      const linkFromExternalUrl = this.extractGoogleLinkFromExternalUrl(listing.external_url);
+      if (linkFromExternalUrl) {
+        url = linkFromExternalUrl;
+      } else {
+        const latitude = review.business.latitude != null ? Number(review.business.latitude) : null;
+        const longitude = review.business.longitude != null ? Number(review.business.longitude) : null;
+        const realPlaceId = await this.lookupGooglePlaceId(bizName, latitude, longitude);
+        url = realPlaceId
+          ? `https://search.google.com/local/writereview?placeid=${realPlaceId}`
+          : null;
       }
     }
 

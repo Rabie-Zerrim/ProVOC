@@ -10,6 +10,7 @@ import { ReviewsModule } from './reviews/reviews.module';
 import { FacebookModule } from './facebook/facebook.module';
 import { NetworksModule } from './networks/networks.module';
 import { RecommendationsModule } from './recommendations/recommendations.module';
+import { ZembraModule } from './zembra/zembra.module';
 
 @Module({
   imports: [
@@ -56,6 +57,7 @@ import { RecommendationsModule } from './recommendations/recommendations.module'
     FacebookModule,
     NetworksModule,
     RecommendationsModule,
+    ZembraModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
+import { HttpModule } from '@nestjs/axios';
 import { ReviewsController } from './reviews.controller';
 import { ReviewsService } from './reviews.service';
 import { PostingWorker } from './posting.worker';
@@ -11,6 +12,7 @@ import { POSTING_QUEUE } from './posting.constants';
   imports: [
     PrismaModule,
     AiModule,
+    HttpModule,
     BullModule.registerQueue({ name: POSTING_QUEUE }),
   ],
   controllers: [ReviewsController],

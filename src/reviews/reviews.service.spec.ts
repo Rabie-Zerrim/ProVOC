@@ -1,6 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { getQueueToken } from '@nestjs/bullmq';
+import { HttpService } from '@nestjs/axios';
+import { ConfigService } from '@nestjs/config';
+import { of, throwError } from 'rxjs';
 import { ReviewsService } from './reviews.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AiService } from '../ai/ai.service';
@@ -51,6 +54,7 @@ const mockReview = {
 describe('ReviewsService', () => {
   let service: ReviewsService;
   let mockQueue: { add: jest.Mock };
+  let httpService: { post: jest.Mock };
   let aiService: {
     transcribeAudio: jest.Mock;
     startChat: jest.Mock;
@@ -85,6 +89,8 @@ describe('ReviewsService', () => {
 
   beforeEach(async () => {
     mockQueue = { add: jest.fn() };
+
+    httpService = { post: jest.fn() };
 
     aiService = {
       transcribeAudio: jest.fn(),
@@ -125,6 +131,16 @@ describe('ReviewsService', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: getQueueToken(POSTING_QUEUE), useValue: mockQueue },
         { provide: AiService, useValue: aiService },
+        { provide: HttpService, useValue: httpService },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) => {
+              if (key === 'GOOGLE_PLACES_API_KEY') return 'test-google-key';
+              return undefined;
+            },
+          },
+        },
       ],
     }).compile();
 
@@ -1197,6 +1213,7 @@ describe('ReviewsService', () => {
       );
       expect(result.platform_name).toBe('Google');
       expect(result.review_text).toBe(mockReview.review_text);
+      expect(httpService.post).not.toHaveBeenCalled();
     });
 
     it('constructs the correct Yelp write-review URL', async () => {
@@ -1243,10 +1260,112 @@ describe('ReviewsService', () => {
       expect(result.platform_name).toBe('Facebook');
     });
 
-    it('returns url: null when external_listing_id is an OSM id (osm- prefix)', async () => {
+    it('Google + zembra- id with usable external_url → derives link from external_url, no Places API call', async () => {
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.listing.findFirst.mockResolvedValue(
+        makeListingWithNetwork('Google', 'zembra-001', 'https://maps.google.com/?cid=12345'),
+      );
+      prisma.userPlatformAccount.findFirst.mockResolvedValue(mockAccount);
+      prisma.reviewPlatformPost.create.mockResolvedValue(mockPost);
+
+      const result = await service.getPublishLink(USER_ID, REVIEW_ID, NETWORK_ID);
+
+      expect(result.url).toBe('https://maps.google.com/?cid=12345');
+      expect(result.url).not.toBe(
+        'https://search.google.com/local/writereview?placeid=zembra-001',
+      );
+      expect(result.platform_name).toBe('Google');
+      expect(httpService.post).not.toHaveBeenCalled();
+      expect(prisma.reviewPlatformPost.create).toHaveBeenCalled();
+    });
+
+    it('Google + zembra- id with no external_url → falls through to Places API lookup', async () => {
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.listing.findFirst.mockResolvedValue(
+        makeListingWithNetwork('Google', 'zembra-001'),
+      );
+      prisma.userPlatformAccount.findFirst.mockResolvedValue(mockAccount);
+      prisma.reviewPlatformPost.create.mockResolvedValue(mockPost);
+      httpService.post.mockReturnValue(
+        of({ data: { places: [{ id: 'ChIJ_real_place_id' }] } }),
+      );
+
+      const result = await service.getPublishLink(USER_ID, REVIEW_ID, NETWORK_ID);
+
+      expect(httpService.post).toHaveBeenCalledWith(
+        expect.stringContaining('https://places.googleapis.com/v1/places:searchText'),
+        expect.objectContaining({ textQuery: 'Test Business' }),
+      );
+      expect(result.url).toBe(
+        'https://search.google.com/local/writereview?placeid=ChIJ_real_place_id',
+      );
+      expect(result.url).not.toBe(
+        'https://search.google.com/local/writereview?placeid=zembra-001',
+      );
+      expect(result.platform_name).toBe('Google');
+    });
+
+    it('Google + osm- id: lookup succeeds → calls Places API and uses returned place.id', async () => {
       prisma.review.findFirst.mockResolvedValue(mockReview);
       prisma.listing.findFirst.mockResolvedValue(
         makeListingWithNetwork('Google', 'osm-4386938002'),
+      );
+      prisma.userPlatformAccount.findFirst.mockResolvedValue(mockAccount);
+      prisma.reviewPlatformPost.create.mockResolvedValue(mockPost);
+      httpService.post.mockReturnValue(
+        of({ data: { places: [{ id: 'ChIJ_real_place_id' }] } }),
+      );
+
+      const result = await service.getPublishLink(USER_ID, REVIEW_ID, NETWORK_ID);
+
+      expect(httpService.post).toHaveBeenCalledWith(
+        expect.stringContaining('https://places.googleapis.com/v1/places:searchText'),
+        expect.objectContaining({ textQuery: 'Test Business' }),
+      );
+      expect(result.url).toBe(
+        'https://search.google.com/local/writereview?placeid=ChIJ_real_place_id',
+      );
+      expect(result.platform_name).toBe('Google');
+      expect(prisma.reviewPlatformPost.create).toHaveBeenCalled();
+    });
+
+    it('Google + osm- id: lookup returns no results → returns url: null (existing contract)', async () => {
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.listing.findFirst.mockResolvedValue(
+        makeListingWithNetwork('Google', 'osm-4386938002'),
+      );
+      prisma.userPlatformAccount.findFirst.mockResolvedValue(mockAccount);
+      prisma.reviewPlatformPost.create.mockResolvedValue(mockPost);
+      httpService.post.mockReturnValue(of({ data: { places: [] } }));
+
+      const result = await service.getPublishLink(USER_ID, REVIEW_ID, NETWORK_ID);
+
+      expect(httpService.post).toHaveBeenCalled();
+      expect(result.url).toBeNull();
+      expect(result.platform_name).toBe('Google');
+      expect(prisma.reviewPlatformPost.create).toHaveBeenCalled();
+    });
+
+    it('Google + osm- id: lookup throws → returns url: null without an unhandled error', async () => {
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.listing.findFirst.mockResolvedValue(
+        makeListingWithNetwork('Google', 'osm-4386938002'),
+      );
+      prisma.userPlatformAccount.findFirst.mockResolvedValue(mockAccount);
+      prisma.reviewPlatformPost.create.mockResolvedValue(mockPost);
+      httpService.post.mockReturnValue(throwError(() => new Error('network error')));
+
+      const result = await service.getPublishLink(USER_ID, REVIEW_ID, NETWORK_ID);
+
+      expect(result.url).toBeNull();
+      expect(result.platform_name).toBe('Google');
+      expect(prisma.reviewPlatformPost.create).toHaveBeenCalled();
+    });
+
+    it('Non-Google network (Yelp) + osm- id: unchanged fallback, no Places API call attempted', async () => {
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.listing.findFirst.mockResolvedValue(
+        makeListingWithNetwork('Yelp', 'osm-4386938002'),
       );
       prisma.userPlatformAccount.findFirst.mockResolvedValue(mockAccount);
       prisma.reviewPlatformPost.create.mockResolvedValue(mockPost);
@@ -1254,9 +1373,10 @@ describe('ReviewsService', () => {
       const result = await service.getPublishLink(USER_ID, REVIEW_ID, NETWORK_ID);
 
       expect(result.url).toBeNull();
-      expect(result.platform_name).toBe('Google');
+      expect(result.platform_name).toBe('Yelp');
       expect(result.review_text).toBe(mockReview.review_text);
       expect(prisma.reviewPlatformPost.create).toHaveBeenCalled();
+      expect(httpService.post).not.toHaveBeenCalled();
     });
 
     it('throws BadRequestException when post_auth_type is not clipboard_deeplink', async () => {
