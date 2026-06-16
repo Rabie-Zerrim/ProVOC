@@ -50,11 +50,11 @@ export class ZembraService {
         }),
       );
 
-      if (!data || data.status === 'ERROR' || !data[network]) {
+      if (!data || data.status === 'ERROR' || !data.data?.[network]) {
         return null;
       }
 
-      const net = data[network];
+      const net = data.data[network];
       return {
         url: net.url ?? '',
         rating: net.globalRating ?? 0,

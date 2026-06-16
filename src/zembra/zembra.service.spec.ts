@@ -5,13 +5,17 @@ import { of, throwError } from 'rxjs';
 import { ZembraService } from './zembra.service';
 
 const makeNetworkData = (network: string, overrides: any = {}) => ({
-  status: 'OK',
-  [network]: {
-    url: `https://example.com/${network}`,
-    globalRating: 4.5,
-    reviewCount: { native: { total: 100 } },
-    ...overrides,
+  status: 'SUCCESS',
+  message: 'OK',
+  data: {
+    [network]: {
+      url: `https://example.com/${network}`,
+      globalRating: 4.5,
+      reviewCount: { native: { total: 100 } },
+      ...overrides,
+    },
   },
+  elapsed: '123ms',
 });
 
 describe('ZembraService', () => {
@@ -100,8 +104,8 @@ describe('ZembraService', () => {
         .mockReturnValueOnce(
           of({
             data: {
-              status: 'OK',
-              google: { url: 'https://example.com/google' },
+              status: 'SUCCESS',
+              data: { google: { url: 'https://example.com/google' } },
             },
           }),
         )
