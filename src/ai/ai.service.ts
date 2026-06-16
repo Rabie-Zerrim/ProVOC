@@ -74,7 +74,8 @@ export class AiService {
         expiresAt: Date.now() + 25 * 60 * 1000,
       });
       return access_token;
-    } catch {
+    } catch (err) {
+      console.error('PV-AI TOKEN RELAY ERROR:', err);
       throw new HttpException('AI authentication service unavailable', HttpStatus.SERVICE_UNAVAILABLE);
     }
   }
