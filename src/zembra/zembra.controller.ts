@@ -56,8 +56,11 @@ export class ZembraController {
     @Query('address') address: string,
   ) {
     try {
-      return await this.zembraService.matchListing(name, address);
-    } catch {
+      const result = await this.zembraService.matchListing(name, address);
+      console.log('ZEMBRA MATCH RESULT:', JSON.stringify(result));
+      return result;
+    } catch (err) {
+      console.error('ZEMBRA MATCH ERROR:', err);
       return { networks: {} };
     }
   }
