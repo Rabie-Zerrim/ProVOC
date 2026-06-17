@@ -17,7 +17,7 @@ const mockPreference = {
   pref_id: 'uuid-pref-1',
   user_id: USER_ID,
   default_tone: 'neutral',
-  preferred_networks: [],
+  preferred_networks: ['google', 'yelp'],
   review_reminder_delay: null,
   location_tracking: true,
 };
@@ -135,7 +135,7 @@ describe('UsersService', () => {
         create: {
           user_id: USER_ID,
           default_tone: 'neutral',
-          preferred_networks: [],
+          preferred_networks: ['google', 'yelp'],
           review_reminder_delay: null,
           location_tracking: true,
         },

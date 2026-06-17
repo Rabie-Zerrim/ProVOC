@@ -6,7 +6,9 @@ import { UpdateAvatarDto } from './dto/update-avatar.dto';
 
 const DEFAULT_PREFERENCES = {
   default_tone: 'neutral',
-  preferred_networks: [] as string[],
+  // preferred_networks holds ENABLED platform slugs. New users start with
+  // the two genuinely working platforms on, not an empty (= nothing enabled) list.
+  preferred_networks: ['google', 'yelp'] as string[],
   review_reminder_delay: null,
   location_tracking: true,
 };
