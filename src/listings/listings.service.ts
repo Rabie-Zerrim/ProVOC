@@ -107,7 +107,11 @@ export class ListingsService {
   }
 
   private async ensureNetwork(slug: string) {
-    const name = SLUG_TO_NAME[slug.toLowerCase()] ?? slug;
+    const normalizedSlug = slug.toLowerCase();
+    // Google Places search results are keyed 'google', 'google_1', 'google_2', ...
+    // for multiple results in one call. Any of these must resolve to the single
+    // canonical 'Google' network, not a separate per-suffix network row.
+    const name = normalizedSlug.startsWith('google') ? 'Google' : SLUG_TO_NAME[normalizedSlug] ?? slug;
     let network = await this.prisma.network.findFirst({ where: { name } });
     if (!network) {
       network = await this.prisma.network.create({ data: { name, is_active: true } });

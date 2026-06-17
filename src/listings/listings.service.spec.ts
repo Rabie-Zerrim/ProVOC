@@ -215,6 +215,42 @@ describe('ListingsService', () => {
       );
     });
 
+    it('resolves network: "google_1" to the existing Google network instead of creating a new one', async () => {
+      prisma.listing.findFirst.mockResolvedValue(null);
+      prisma.network.findFirst.mockResolvedValue(mockNetwork);
+      prisma.networkPreference.findUnique.mockResolvedValue(mockPrefs);
+      prisma.business.create.mockResolvedValue(mockBusiness);
+      prisma.listing.create.mockResolvedValue(mockListing);
+      prisma.listing.findMany.mockResolvedValue([]);
+
+      await service.save({ ...dto, network: 'google_1' });
+
+      expect(prisma.network.findFirst).toHaveBeenCalledWith({ where: { name: 'Google' } });
+      expect(prisma.network.create).not.toHaveBeenCalled();
+      expect(prisma.listing.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ network_id: mockNetwork.network_id }),
+        }),
+      );
+    });
+
+    it('creates a single canonical Google network when "google_7" is the first-ever Google save', async () => {
+      prisma.listing.findFirst.mockResolvedValue(null);
+      prisma.network.findFirst.mockResolvedValue(null);
+      prisma.network.create.mockResolvedValue(mockNetwork);
+      prisma.networkPreference.findUnique.mockResolvedValue(null);
+      prisma.networkPreference.create.mockResolvedValue(mockPrefs);
+      prisma.business.create.mockResolvedValue(mockBusiness);
+      prisma.listing.create.mockResolvedValue(mockListing);
+      prisma.listing.findMany.mockResolvedValue([]);
+
+      await service.save({ ...dto, network: 'google_7' });
+
+      expect(prisma.network.create).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ name: 'Google' }) }),
+      );
+    });
+
     it('resolves network_slug to existing network without calling ensureNetwork', async () => {
       prisma.listing.findFirst.mockResolvedValue(null);
       prisma.network.findFirst.mockResolvedValue(mockNetwork);
