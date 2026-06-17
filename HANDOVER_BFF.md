@@ -1704,4 +1704,73 @@ Checklist:
 
 ---
 
-*This document reflects the state of the project as of 2026-06-13.*
+## 28. PUBLISH-LINK FIXES + ZEMBRA INTEGRATION BUG (added 2026-06-17)
+
+### Google publish-link — real Place ID lookup for OSM/manual listings
+
+`getPublishLink()`'s `hasValidId` check previously only excluded `external_listing_id` values starting with `osm-` or `manual-`. For Google specifically, this meant listings sourced via the nearby/OSM search flow always fell through to the generic `https://maps.google.com/?q={businessName}` fallback, even though a real, working Google Place ID could often be found live.
+
+**Fix:** `hasValidId` now additionally requires, for Google only, that `external_listing_id` matches `/^ChIJ[A-Za-z0-9_-]+$/` (the real Google Place ID format). When this fails, a new private helper attempts a live Google Places API lookup (same pattern as [listings.service.ts](src/listings/listings.service.ts)'s `search()` — `places.googleapis.com/v1/places:searchText`, using business name as `textQuery` and latitude/longitude as `locationBias.circle.center` radius 5000 when available) to find a real `place.id` before falling back. On any failure (API error, empty results, exception), the function returns `url: null` — deliberately **not** the generic Maps URL — to match the existing frontend contract: `app/review/result.tsx` already has its own multi-step fallback chain (`data.url` → `listing.url` → `review.listing?.external_url` → direct listing refetch) when `url` is `null`, confirmed via the comment at `result.tsx` line ~138 ("publish-link often returns null"). Returning a Maps URL from the backend would have short-circuited that existing frontend logic.
+
+### Yelp publish-link — same problem, two-tier fix
+
+Yelp had an equivalent bug: Zembra-sourced listings get a synthetic `external_listing_id` like `zembra-yelp-{businessId}` (not a real Yelp business ID), which incorrectly **passed** the original `hasValidId` check (it only excluded `osm-`/`manual-` prefixes), causing a broken URL: `https://www.yelp.com/writeareview/biz/zembra-yelp-{businessId}`.
+
+**Fix tier 1 (real Yelp ID):** a new `zembra_external_id` column was added to the `Listing` model (nullable string) specifically to store Zembra's real business ID (e.g. `"FEVQpbOPOwAPNIgO7D3xxw"`, found at the raw Zembra response's `data.data.yelp.id` field — see the Zembra integration bug below). When present, `getPublishLink()` builds `https://www.yelp.com/writeareview/biz/{zembra_external_id}` directly — this lands on Yelp's actual review form, not just the business page.
+
+**Fix tier 2 (fallback when no real ID stored):** if `zembra_external_id` is absent, falls back to using `listing.external_url` directly when it's a `yelp.com`-family domain (Yelp's own business page works as a "go review this" link — no special writeareview path needed, unlike Google).
+
+**Fix tier 3 (final fallback):** the original `writeareview/biz/{external_listing_id}` behavior, preserved for listings with a genuinely real (non-synthetic) `external_listing_id`.
+
+**New migration:** `20260617000052_add_zembra_external_id` (nullable `zembra_external_id` column on `listings` table). Applied to Railway production DB via:
+
+```bash
+$env:DATABASE_URL="<railway-public-connection-string-for-pv-bff-db>"
+npx prisma migrate deploy
+```
+
+> Note: must override `DATABASE_URL` explicitly — running the bare command uses the local `.env` value and reports "No pending migrations" against the **wrong** database, since it silently succeeds against localhost where the migration was already applied during development.
+
+### Critical bug found: Zembra response parsing was wrong since the integration was first built
+
+While debugging why `/zembra/match` always returned `{ networks: {} }` even for businesses confirmed (via direct curl + ngrok inspector) to have real Yelp/Google data, found that `zembra.service.ts`'s `fetchNetwork()` read the per-network payload from `response.data[network]`, but Zembra's actual response envelope nests it one level deeper: `{ status: "SUCCESS", message: "...", data: { yelp: {...} }, elapsed: "..." }` — meaning the real path is `response.data.data[network]`. The existing check `if (!data[network]) return null` was evaluating an always-undefined value and silently treating every genuine success as a failure. This means Zembra's Yelp/Google matching has likely never actually worked correctly in production since this integration was first built — confirmed by testing with a known-good business (Shake Shack Madison Square Park) via ngrok's request inspector, which showed Zembra returning a fully correct SUCCESS response that the code was silently discarding.
+
+**Fix:** `fetchNetwork` now reads from `data.data?.[network]` instead of `data[network]`. The top-level `data.status === 'ERROR'` check (for genuinely failed lookups) was correct already and is unchanged.
+
+### ngrok tunnel required for local Zembra access from Railway
+
+Since pv-bff now runs on Railway but Zembra is local-only (Docker stack on the dev machine, see existing Zembra handover notes), reaching Zembra from Railway requires an active ngrok tunnel:
+
+```bash
+ngrok.exe http https://localhost:443 --host-header=localapi.zembra.io
+```
+
+**Important:** do **not** manually set a `Host` header in the outgoing request from `zembra.service.ts`. ngrok validates the incoming request's `Host` header against its own tunnel domain on the public side — if `zembra.service.ts` sends `Host: localapi.zembra.io` itself (which it used to, via a `ZEMBRA_HOST_HEADER` config var), ngrok rejects it with `"Received a request for different Host than the current tunnel."` The `--host-header=localapi.zembra.io` flag on the ngrok command itself handles rewriting the header correctly on the way to local nginx — the client (pv-bff) must send no Host override at all. `ZEMBRA_HOST_HEADER` config and its read in the constructor were removed entirely.
+
+ngrok free-tier URLs are ephemeral — every restart generates a new URL, requiring `ZEMBRA_API_URL` to be updated on Railway and redeployed. This must be done fresh before any demo/test session that needs live Zembra data.
+
+### Double-tap bug — keyboard swallowing first touch (pv-app, not pv-bff, but documented here for completeness)
+
+`app/search.tsx`'s `autoFocus` `TextInput` combined with `FlatList`s that lacked `keyboardShouldPersistTaps` caused the first tap on any result/history item to only dismiss the keyboard (RN default `keyboardShouldPersistTaps="never"`) rather than firing `onPress`. Fixed by adding `keyboardShouldPersistTaps="handled"` to both `FlatList`s in `search.tsx` and to the `ScrollView` in `result.tsx` (same pattern found there too). `chat.tsx`'s `autoFocus` inputs were checked and are **not** affected — they sit in plain sibling `View`s, not inside the same scrollable container as the `autoFocus` input.
+
+### Files changed (pv-bff)
+
+| File | Change |
+|---|---|
+| [src/reviews/reviews.service.ts](src/reviews/reviews.service.ts) | `getPublishLink()`: Google ChIJ-pattern validation + live Places API lookup fallback; Yelp 3-tier fallback (`zembra_external_id` → `external_url` → existing behavior) |
+| [src/reviews/reviews.service.spec.ts](src/reviews/reviews.service.spec.ts) | New/updated tests for Google live-lookup success/failure and Yelp 3-tier fallback |
+| [src/zembra/zembra.service.ts](src/zembra/zembra.service.ts) | `fetchNetwork()`: fixed `data[network]` → `data.data?.[network]` parsing bug; added `id` extraction; removed `Host` header override and `ZEMBRA_HOST_HEADER` config |
+| [src/zembra/zembra.service.spec.ts](src/zembra/zembra.service.spec.ts) | Fixtures updated to the real nested Zembra response shape; `id` field coverage; Host-header assertion updated |
+| [src/zembra/zembra.controller.ts](src/zembra/zembra.controller.ts) | Swagger schema updated to document the new `id` field per network |
+| [src/listings/dto/save-listing.dto.ts](src/listings/dto/save-listing.dto.ts) | Added optional `zembra_external_id` field |
+| [src/listings/listings.service.ts](src/listings/listings.service.ts) | `save()` persists `zembra_external_id` on listing creation |
+| [prisma/schema.prisma](prisma/schema.prisma) | `Listing` model: added `zembra_external_id String?` |
+| `prisma/migrations/20260617000052_add_zembra_external_id/` | New migration adding the nullable column |
+
+### Test count
+
+113 → 114 passing (final count after all fixes in this session; note intermediate counts of 111, 113 occurred during the multi-step fix sequence — 114 is the final state).
+
+---
+
+*This document reflects the state of the project as of 2026-06-17.*
