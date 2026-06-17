@@ -11,6 +11,7 @@ import { FacebookModule } from './facebook/facebook.module';
 import { NetworksModule } from './networks/networks.module';
 import { RecommendationsModule } from './recommendations/recommendations.module';
 import { ZembraModule } from './zembra/zembra.module';
+import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
@@ -58,6 +59,7 @@ import { ZembraModule } from './zembra/zembra.module';
     NetworksModule,
     RecommendationsModule,
     ZembraModule,
+    UsersModule,
   ],
   controllers: [AppController],
   providers: [AppService],
