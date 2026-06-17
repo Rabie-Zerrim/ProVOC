@@ -14,6 +14,7 @@ describe('UsersController', () => {
     getPreferences: jest.Mock;
     updatePreferences: jest.Mock;
     updateAvatar: jest.Mock;
+    changePassword: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -22,6 +23,7 @@ describe('UsersController', () => {
       getPreferences: jest.fn(),
       updatePreferences: jest.fn(),
       updateAvatar: jest.fn(),
+      changePassword: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -69,6 +71,16 @@ describe('UsersController', () => {
 
     expect(usersService.updateAvatar).toHaveBeenCalledWith('user-1', dto);
     expect(result).toEqual({ avatar_data: 'data:image/png;base64,abc' });
+  });
+
+  it('changePassword delegates to UsersService with the requesting user_id', async () => {
+    const dto = { current_password: 'old-pass', new_password: 'new-password-123' };
+    usersService.changePassword.mockResolvedValue({ success: true });
+
+    const result = await controller.changePassword({ user: { user_id: 'user-1' } }, dto);
+
+    expect(usersService.changePassword).toHaveBeenCalledWith('user-1', dto);
+    expect(result).toEqual({ success: true });
   });
 });
 

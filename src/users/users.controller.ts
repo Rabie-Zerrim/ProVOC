@@ -6,12 +6,14 @@ import {
   ApiOkResponse,
   ApiBadRequestResponse,
   ApiConflictResponse,
+  ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UsersService } from './users.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { UpdateAvatarDto } from './dto/update-avatar.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 
 @ApiTags('users')
 @ApiBearerAuth('access-token')
@@ -61,5 +63,17 @@ export class UsersController {
   @ApiBadRequestResponse({ description: 'Avatar payload exceeds the 2MB decoded size limit' })
   updateAvatar(@Request() req, @Body() dto: UpdateAvatarDto) {
     return this.usersService.updateAvatar(req.user.user_id, dto);
+  }
+
+  @Patch('me/password')
+  @ApiOperation({ summary: "Change the current user's password" })
+  @ApiOkResponse({
+    description: 'Password changed',
+    schema: { properties: { success: { type: 'boolean', example: true } } },
+  })
+  @ApiBadRequestResponse({ description: 'new_password is shorter than 8 characters' })
+  @ApiUnauthorizedResponse({ description: 'current_password is incorrect' })
+  changePassword(@Request() req, @Body() dto: ChangePasswordDto) {
+    return this.usersService.changePassword(req.user.user_id, dto);
   }
 }

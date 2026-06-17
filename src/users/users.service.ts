@@ -1,8 +1,10 @@
-import { Injectable, BadRequestException, ConflictException } from '@nestjs/common';
+import { Injectable, BadRequestException, ConflictException, UnauthorizedException } from '@nestjs/common';
+import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { UpdateAvatarDto } from './dto/update-avatar.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 
 const DEFAULT_PREFERENCES = {
   default_tone: 'neutral',
@@ -99,5 +101,26 @@ export class UsersService {
     });
 
     return { avatar_data: dto.avatar_data };
+  }
+
+  async changePassword(userId: string, dto: ChangePasswordDto) {
+    const credential = await this.prisma.userCredential.findUnique({ where: { user_id: userId } });
+
+    const isCurrentPasswordValid = credential
+      ? await bcrypt.compare(dto.current_password, credential.password_hash)
+      : false;
+
+    if (!isCurrentPasswordValid) {
+      throw new UnauthorizedException('Current password is incorrect');
+    }
+
+    const newPasswordHash = await bcrypt.hash(dto.new_password, 10);
+
+    await this.prisma.userCredential.update({
+      where: { user_id: userId },
+      data: { password_hash: newPasswordHash },
+    });
+
+    return { success: true };
   }
 }

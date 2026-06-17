@@ -1,7 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException, UnauthorizedException } from '@nestjs/common';
+import { validate } from 'class-validator';
+import { plainToInstance } from 'class-transformer';
+import * as bcrypt from 'bcryptjs';
 import { UsersService } from './users.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { ChangePasswordDto } from './dto/change-password.dto';
 
 const USER_ID = 'uuid-user-1';
 const OTHER_USER_ID = 'uuid-user-2';
@@ -11,6 +15,14 @@ const mockCredential = {
   user_id: USER_ID,
   email: 'jane@example.com',
   user: { user_id: USER_ID, display_name: 'Jane Doe' },
+};
+
+const CURRENT_PASSWORD = 'correct-password-123';
+const CURRENT_PASSWORD_HASH = bcrypt.hashSync(CURRENT_PASSWORD, 10);
+
+const mockCredentialWithPassword = {
+  user_id: USER_ID,
+  password_hash: CURRENT_PASSWORD_HASH,
 };
 
 const mockPreference = {
@@ -237,5 +249,81 @@ describe('UsersService', () => {
       ).rejects.toThrow(BadRequestException);
       expect(prisma.user.update).not.toHaveBeenCalled();
     });
+  });
+
+  // ── changePassword ───────────────────────────────────────────────────────────
+
+  describe('changePassword', () => {
+    it('updates password_hash and returns { success: true } when current_password is correct', async () => {
+      prisma.userCredential.findUnique.mockResolvedValue(mockCredentialWithPassword);
+      prisma.userCredential.update.mockResolvedValue({});
+
+      const result = await service.changePassword(USER_ID, {
+        current_password: CURRENT_PASSWORD,
+        new_password: 'brandNewPassword456',
+      });
+
+      expect(prisma.userCredential.findUnique).toHaveBeenCalledWith({ where: { user_id: USER_ID } });
+      expect(prisma.userCredential.update).toHaveBeenCalledWith({
+        where: { user_id: USER_ID },
+        data: { password_hash: expect.any(String) },
+      });
+      const savedHash = prisma.userCredential.update.mock.calls[0][0].data.password_hash;
+      expect(savedHash).not.toBe(CURRENT_PASSWORD_HASH);
+      expect(bcrypt.compareSync('brandNewPassword456', savedHash)).toBe(true);
+      expect(result).toEqual({ success: true });
+    });
+
+    it('throws UnauthorizedException (401) when current_password is wrong, without writing to the DB', async () => {
+      prisma.userCredential.findUnique.mockResolvedValue(mockCredentialWithPassword);
+
+      await expect(
+        service.changePassword(USER_ID, {
+          current_password: 'totally-wrong-password',
+          new_password: 'brandNewPassword456',
+        }),
+      ).rejects.toThrow(UnauthorizedException);
+      expect(prisma.userCredential.update).not.toHaveBeenCalled();
+    });
+
+    it('throws UnauthorizedException (401) when no credential exists for the user', async () => {
+      prisma.userCredential.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.changePassword(USER_ID, {
+          current_password: CURRENT_PASSWORD,
+          new_password: 'brandNewPassword456',
+        }),
+      ).rejects.toThrow(UnauthorizedException);
+      expect(prisma.userCredential.update).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('ChangePasswordDto', () => {
+  it('should fail validation when new_password is shorter than 8 characters', async () => {
+    const dto = plainToInstance(ChangePasswordDto, {
+      current_password: 'whatever',
+      new_password: 'short',
+    });
+
+    const errors = await validate(dto);
+
+    const newPasswordError = errors.find((e) => e.property === 'new_password');
+    expect(newPasswordError).toBeDefined();
+    expect(newPasswordError?.constraints?.minLength).toBeDefined();
+  });
+
+  it('should fail validation when current_password is empty', async () => {
+    const dto = plainToInstance(ChangePasswordDto, {
+      current_password: '',
+      new_password: 'longEnoughPassword123',
+    });
+
+    const errors = await validate(dto);
+
+    const currentPasswordError = errors.find((e) => e.property === 'current_password');
+    expect(currentPasswordError).toBeDefined();
+    expect(currentPasswordError?.constraints?.isNotEmpty).toBeDefined();
   });
 });
