@@ -154,6 +154,26 @@ export class ReviewsController {
     return this.reviewsService.getStats(req.user.user_id);
   }
 
+  @Get('recent-check')
+  @ApiOperation({
+    summary: 'Check whether the user has reviewed this business recently',
+    description:
+      'Returns hasRecentReview=true when the user has a non-deleted review for this business created within the last 24 hours. lastReviewedAt is always the timestamp of the most recent review for this business by this user (regardless of the 24h threshold), or null if none exists.',
+  })
+  @ApiQuery({ name: 'business_id', description: 'Business UUID', required: true })
+  @ApiOkResponse({
+    description: 'Recent review check result',
+    schema: {
+      properties: {
+        hasRecentReview: { type: 'boolean', example: true },
+        lastReviewedAt: { type: 'string', format: 'date-time', nullable: true },
+      },
+    },
+  })
+  checkRecentReview(@Request() req, @Query('business_id') businessId: string) {
+    return this.reviewsService.checkRecentReview(req.user.user_id, businessId);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Get full details of a single review' })
   @ApiParam({ name: 'id', description: 'Review UUID' })

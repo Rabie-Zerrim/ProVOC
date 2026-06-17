@@ -1483,4 +1483,52 @@ describe('ReviewsService', () => {
       expect(prisma.reviewPlatformPost.create).not.toHaveBeenCalled();
     });
   });
+
+  // ── checkRecentReview ─────────────────────────────────────────────────────────
+
+  describe('checkRecentReview', () => {
+    it('returns hasRecentReview: true when the most recent review was created within 24 hours', async () => {
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+      prisma.review.findFirst.mockResolvedValue({ created_at: oneHourAgo });
+
+      const result = await service.checkRecentReview(USER_ID, BUSINESS_ID);
+
+      expect(prisma.review.findFirst).toHaveBeenCalledWith({
+        where: { user_id: USER_ID, business_id: BUSINESS_ID, deleted_at: null },
+        orderBy: { created_at: 'desc' },
+        select: { created_at: true },
+      });
+      expect(result).toEqual({ hasRecentReview: true, lastReviewedAt: oneHourAgo.toISOString() });
+    });
+
+    it('returns hasRecentReview: false when the most recent review is older than 24 hours', async () => {
+      const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+      prisma.review.findFirst.mockResolvedValue({ created_at: threeDaysAgo });
+
+      const result = await service.checkRecentReview(USER_ID, BUSINESS_ID);
+
+      expect(result).toEqual({ hasRecentReview: false, lastReviewedAt: threeDaysAgo.toISOString() });
+    });
+
+    it('returns hasRecentReview: false and lastReviewedAt: null when there is no review for this business', async () => {
+      prisma.review.findFirst.mockResolvedValue(null);
+
+      const result = await service.checkRecentReview(USER_ID, BUSINESS_ID);
+
+      expect(result).toEqual({ hasRecentReview: false, lastReviewedAt: null });
+    });
+
+    it('excludes soft-deleted reviews (filtered via deleted_at: null in the query)', async () => {
+      // The only review for this business is soft-deleted, so the deleted_at: null
+      // filter means Prisma would find nothing — simulated here by resolving null.
+      prisma.review.findFirst.mockResolvedValue(null);
+
+      const result = await service.checkRecentReview(USER_ID, BUSINESS_ID);
+
+      expect(prisma.review.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ deleted_at: null }) }),
+      );
+      expect(result).toEqual({ hasRecentReview: false, lastReviewedAt: null });
+    });
+  });
 });

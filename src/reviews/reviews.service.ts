@@ -772,6 +772,23 @@ export class ReviewsService {
     };
   }
 
+  async checkRecentReview(userId: string, businessId: string) {
+    const lastReview = await this.prisma.review.findFirst({
+      where: { user_id: userId, business_id: businessId, deleted_at: null },
+      orderBy: { created_at: 'desc' },
+      select: { created_at: true },
+    });
+
+    if (!lastReview) {
+      return { hasRecentReview: false, lastReviewedAt: null };
+    }
+
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const hasRecentReview = lastReview.created_at >= twentyFourHoursAgo;
+
+    return { hasRecentReview, lastReviewedAt: lastReview.created_at.toISOString() };
+  }
+
   async getChatHistory(userId: string, reviewId: string) {
     const review = await this.prisma.review.findFirst({
       where: { review_id: reviewId, deleted_at: null },
