@@ -165,6 +165,7 @@ model Listing {
   business_id         String               @db.Uuid
   network_id          String               @db.Uuid
   external_listing_id String?
+  zembra_external_id  String?
   external_rating     Decimal?             @db.Decimal(3, 2)
   external_url        String?
   is_active           Boolean              @default(true)

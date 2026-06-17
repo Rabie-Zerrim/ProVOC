@@ -737,8 +737,12 @@ export class ReviewsService {
           : null;
       }
     } else if (networkName === 'Yelp') {
-      const linkFromExternalUrl = this.extractYelpLinkFromExternalUrl(listing.external_url);
-      url = linkFromExternalUrl ?? `https://www.yelp.com/writeareview/biz/${extId}`;
+      if (listing.zembra_external_id) {
+        url = `https://www.yelp.com/writeareview/biz/${listing.zembra_external_id}`;
+      } else {
+        const linkFromExternalUrl = this.extractYelpLinkFromExternalUrl(listing.external_url);
+        url = linkFromExternalUrl ?? `https://www.yelp.com/writeareview/biz/${extId}`;
+      }
     }
 
     let account = await this.prisma.userPlatformAccount.findFirst({

@@ -23,7 +23,7 @@ export class ZembraService {
       NETWORKS.map(network => this.fetchNetwork(name, address, network)),
     );
 
-    const networks: Record<string, { url: string; rating: number; reviewCount: number }> = {};
+    const networks: Record<string, { id: string | null; url: string; rating: number; reviewCount: number }> = {};
     results.forEach((result, i) => {
       if (result.status === 'fulfilled' && result.value !== null) {
         networks[NETWORKS[i]] = result.value;
@@ -37,7 +37,7 @@ export class ZembraService {
     name: string,
     address: string,
     network: string,
-  ): Promise<{ url: string; rating: number; reviewCount: number } | null> {
+  ): Promise<{ id: string | null; url: string; rating: number; reviewCount: number } | null> {
     try {
       const params = new URLSearchParams({ name, address });
       params.append('networks[]', network);
@@ -56,6 +56,7 @@ export class ZembraService {
 
       const net = data.data[network];
       return {
+        id: net.id ?? null,
         url: net.url ?? '',
         rating: net.globalRating ?? 0,
         reviewCount: net.reviewCount?.native?.total ?? 0,

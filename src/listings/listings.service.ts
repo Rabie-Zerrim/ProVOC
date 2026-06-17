@@ -211,6 +211,7 @@ export class ListingsService {
         business_id: businessId,
         network_id: network.network_id,
         external_listing_id: dto.external_listing_id,
+        zembra_external_id: dto.zembra_external_id,
         external_rating: dto.external_rating,
         external_url: dto.external_url,
         last_synced_at: new Date(),

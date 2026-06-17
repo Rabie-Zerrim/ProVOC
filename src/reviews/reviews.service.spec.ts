@@ -1182,12 +1182,18 @@ describe('ReviewsService', () => {
     const mockAccount = { account_id: ACCOUNT_ID, user_id: USER_ID, network_id: NETWORK_ID };
     const mockPost = { post_id: POST_ID, review_id: REVIEW_ID, network_id: NETWORK_ID, status: 'clipboard_opened' };
 
-    function makeListingWithNetwork(networkName: string, externalListingId: string, externalUrl: string | null = null) {
+    function makeListingWithNetwork(
+      networkName: string,
+      externalListingId: string,
+      externalUrl: string | null = null,
+      zembraExternalId: string | null = null,
+    ) {
       return {
         listing_id: LISTING_ID,
         business_id: BUSINESS_ID,
         network_id: NETWORK_ID,
         external_listing_id: externalListingId,
+        zembra_external_id: zembraExternalId,
         external_url: externalUrl,
         is_active: true,
         network: {
@@ -1228,6 +1234,26 @@ describe('ReviewsService', () => {
 
       expect(result.url).toBe('https://www.yelp.com/writeareview/biz/best-biz-san-francisco');
       expect(result.platform_name).toBe('Yelp');
+    });
+
+    it('Yelp + zembra_external_id present → builds writeareview URL from the real Yelp ID, ignoring external_url', async () => {
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.listing.findFirst.mockResolvedValue(
+        makeListingWithNetwork(
+          'Yelp',
+          'zembra-yelp-biz-uuid-1',
+          'https://www.yelp.com/biz/shake-shack-madison-square-park-new-york-3',
+          'FEVQpbOPOwAPNIgO7D3xxw',
+        ),
+      );
+      prisma.userPlatformAccount.findFirst.mockResolvedValue(mockAccount);
+      prisma.reviewPlatformPost.create.mockResolvedValue(mockPost);
+
+      const result = await service.getPublishLink(USER_ID, REVIEW_ID, NETWORK_ID);
+
+      expect(result.url).toBe('https://www.yelp.com/writeareview/biz/FEVQpbOPOwAPNIgO7D3xxw');
+      expect(result.platform_name).toBe('Yelp');
+      expect(prisma.reviewPlatformPost.create).toHaveBeenCalled();
     });
 
     it('Yelp + zembra- id with usable yelp.com external_url → uses external_url directly', async () => {

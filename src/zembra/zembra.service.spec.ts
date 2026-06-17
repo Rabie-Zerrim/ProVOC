@@ -9,6 +9,7 @@ const makeNetworkData = (network: string, overrides: any = {}) => ({
   message: 'OK',
   data: {
     [network]: {
+      id: `real-${network}-id`,
       url: `https://example.com/${network}`,
       globalRating: 4.5,
       reviewCount: { native: { total: 100 } },
@@ -58,8 +59,8 @@ describe('ZembraService', () => {
 
       expect(result).toEqual({
         networks: {
-          google: { url: 'https://example.com/google', rating: 4.5, reviewCount: 100 },
-          yelp: { url: 'https://example.com/yelp', rating: 4.5, reviewCount: 100 },
+          google: { id: 'real-google-id', url: 'https://example.com/google', rating: 4.5, reviewCount: 100 },
+          yelp: { id: 'real-yelp-id', url: 'https://example.com/yelp', rating: 4.5, reviewCount: 100 },
         },
       });
     });
@@ -73,7 +74,7 @@ describe('ZembraService', () => {
 
       expect(result).toEqual({
         networks: {
-          google: { url: 'https://example.com/google', rating: 4.5, reviewCount: 100 },
+          google: { id: 'real-google-id', url: 'https://example.com/google', rating: 4.5, reviewCount: 100 },
         },
       });
     });
@@ -99,7 +100,7 @@ describe('ZembraService', () => {
       expect(result.networks).toHaveProperty('yelp');
     });
 
-    it('uses zero fallback for rating and reviewCount when fields are missing', async () => {
+    it('uses null/zero fallback for id, rating and reviewCount when fields are missing', async () => {
       httpService.get
         .mockReturnValueOnce(
           of({
@@ -114,6 +115,7 @@ describe('ZembraService', () => {
       const result = await service.matchListing('Test Business', '123 Main St');
 
       expect(result.networks.google).toEqual({
+        id: null,
         url: 'https://example.com/google',
         rating: 0,
         reviewCount: 0,

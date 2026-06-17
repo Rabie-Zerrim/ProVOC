@@ -32,6 +32,11 @@ export class SaveListingDto {
   @IsString()
   external_url?: string;
 
+  @ApiPropertyOptional({ example: 'FEVQpbOPOwAPNIgO7D3xxw', description: "Zembra's real platform business ID (e.g. Yelp business ID), when known, used to build a direct review-form deep link" })
+  @IsOptional()
+  @IsString()
+  zembra_external_id?: string;
+
   @ApiPropertyOptional({ example: 'google', description: 'Network slug (google, yelp, tripadvisor, facebook, trustpilot)' })
   @IsOptional()
   @IsString()

@@ -32,6 +32,7 @@ export class ZembraController {
               type: 'object',
               nullable: true,
               properties: {
+                id: { type: 'string', nullable: true },
                 url: { type: 'string' },
                 rating: { type: 'number' },
                 reviewCount: { type: 'number' },
@@ -41,6 +42,7 @@ export class ZembraController {
               type: 'object',
               nullable: true,
               properties: {
+                id: { type: 'string', nullable: true },
                 url: { type: 'string' },
                 rating: { type: 'number' },
                 reviewCount: { type: 'number' },
