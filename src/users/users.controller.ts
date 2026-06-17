@@ -11,6 +11,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UsersService } from './users.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
+import { UpdateAvatarDto } from './dto/update-avatar.dto';
 
 @ApiTags('users')
 @ApiBearerAuth('access-token')
@@ -49,5 +50,16 @@ export class UsersController {
   @ApiOkResponse({ description: 'Updated preferences' })
   updatePreferences(@Request() req, @Body() dto: UpdatePreferencesDto) {
     return this.usersService.updatePreferences(req.user.user_id, dto);
+  }
+
+  @Patch('me/avatar')
+  @ApiOperation({ summary: "Update the current user's avatar (stored as base64 image data)" })
+  @ApiOkResponse({
+    description: 'Saved avatar data',
+    schema: { properties: { avatar_data: { type: 'string' } } },
+  })
+  @ApiBadRequestResponse({ description: 'Avatar payload exceeds the 2MB decoded size limit' })
+  updateAvatar(@Request() req, @Body() dto: UpdateAvatarDto) {
+    return this.usersService.updateAvatar(req.user.user_id, dto);
   }
 }

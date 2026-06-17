@@ -197,4 +197,45 @@ describe('UsersService', () => {
       );
     });
   });
+
+  // ── updateAvatar ─────────────────────────────────────────────────────────────
+
+  describe('updateAvatar', () => {
+    it('saves a small avatar payload and returns it', async () => {
+      const avatarData = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==';
+      prisma.user.update.mockResolvedValue({});
+
+      const result = await service.updateAvatar(USER_ID, { avatar_data: avatarData });
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { user_id: USER_ID },
+        data: { avatar_data: avatarData },
+      });
+      expect(result).toEqual({ avatar_data: avatarData });
+    });
+
+    it('saves a raw base64 string (no data URI prefix) just as well', async () => {
+      const avatarData = 'iVBORw0KGgoAAAANSUhEUg==';
+      prisma.user.update.mockResolvedValue({});
+
+      const result = await service.updateAvatar(USER_ID, { avatar_data: avatarData });
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { user_id: USER_ID },
+        data: { avatar_data: avatarData },
+      });
+      expect(result).toEqual({ avatar_data: avatarData });
+    });
+
+    it('throws BadRequestException when the decoded payload exceeds 2MB and does not write to the DB', async () => {
+      // 2,800,000 base64 chars -> 2,100,000 decoded bytes, just over the 2MB (2,097,152 byte) limit
+      const oversizedPayload = 'A'.repeat(2_800_000);
+      const avatarData = `data:image/jpeg;base64,${oversizedPayload}`;
+
+      await expect(
+        service.updateAvatar(USER_ID, { avatar_data: avatarData }),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+  });
 });

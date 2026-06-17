@@ -86,6 +86,35 @@ describe('AuthService', () => {
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
   });
+
+  describe('me', () => {
+    it('includes avatar_data in the returned profile', async () => {
+      prisma.userCredential.findUnique.mockResolvedValue({
+        ...mockCredential,
+        user: { ...mockUser, avatar_data: 'data:image/jpeg;base64,abc123' },
+      });
+
+      const result = await service.me(mockUser.user_id);
+
+      expect(result).toEqual({
+        user_id: mockUser.user_id,
+        email: mockCredential.email,
+        display_name: mockUser.display_name,
+        avatar_data: 'data:image/jpeg;base64,abc123',
+      });
+    });
+
+    it('returns avatar_data: null when the user has no avatar set', async () => {
+      prisma.userCredential.findUnique.mockResolvedValue({
+        ...mockCredential,
+        user: { ...mockUser, avatar_data: null },
+      });
+
+      const result = await service.me(mockUser.user_id);
+
+      expect(result.avatar_data).toBeNull();
+    });
+  });
 });
 
 describe('RegisterDto', () => {

@@ -59,6 +59,7 @@ export class AuthService {
       user_id: userId,
       email: credential?.email ?? '',
       display_name: credential?.user?.display_name ?? '',
+      avatar_data: credential?.user?.avatar_data ?? null,
     };
   }
 

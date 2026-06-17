@@ -13,6 +13,7 @@ model User {
   language          String                @default("fr") @db.VarChar(10)
   age_verified      Boolean               @default(false)
   is_active         Boolean               @default(true)
+  avatar_data       String?               @db.Text
   created_at        DateTime              @default(now())
   updated_at        DateTime              @updatedAt
   consents          DataConsent[]
