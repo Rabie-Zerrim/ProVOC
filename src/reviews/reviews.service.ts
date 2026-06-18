@@ -539,6 +539,7 @@ export class ReviewsService {
       review.language ?? 'fr',
       listingContext,
       userId,
+      body?.previous_messages,
     );
 
     await this.prisma.review.update({

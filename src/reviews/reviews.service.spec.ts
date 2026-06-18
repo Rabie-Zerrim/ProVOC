@@ -944,6 +944,7 @@ describe('ReviewsService', () => {
           ]),
         }),
         USER_ID,
+        undefined,
       );
       expect(prisma.review.update).toHaveBeenCalledWith({
         where: { review_id: REVIEW_ID },
@@ -972,6 +973,7 @@ describe('ReviewsService', () => {
         mockReview.language,
         expect.objectContaining({ business_name: 'Test Business' }),
         USER_ID,
+        undefined,
       );
       expect(prisma.reviewChatMessage.create).not.toHaveBeenCalled();
       expect(prisma.reviewChatMessage.createMany).not.toHaveBeenCalled();
@@ -1001,6 +1003,7 @@ describe('ReviewsService', () => {
         mockReview.language,
         expect.objectContaining({ business_name: 'Test Business' }),
         USER_ID,
+        undefined,
       );
     });
 
@@ -1027,6 +1030,34 @@ describe('ReviewsService', () => {
         mockReview.language,
         expect.objectContaining({ business_name: 'Test Business' }),
         USER_ID,
+        undefined,
+      );
+    });
+
+    it('forwards body.previous_messages through to AiService.startChat for regenerate/rephrase', async () => {
+      const previousMessages = [
+        { role: 'user', content: 'Make it more formal' },
+        { role: 'assistant', content: 'Here is a more formal version...' },
+      ];
+      prisma.review.findFirst.mockResolvedValue({ ...mockReview, business: { name: 'Test Business' } });
+      prisma.listing.findMany.mockResolvedValue([mockListingWithNetwork]);
+      aiService.startChat.mockResolvedValue({
+        session_id: 'session-regen',
+        initial_response: 'Hello!',
+        detected_language: 'en',
+      });
+      prisma.review.update.mockResolvedValue({});
+
+      await service.startChat(USER_ID, REVIEW_ID, { previous_messages: previousMessages } as any);
+
+      expect(aiService.startChat).toHaveBeenCalledWith(
+        REVIEW_ID,
+        `The current review text is: "${mockReview.review_text}".\nThe user wants to continue refining it. Ask them what they would like to change.`,
+        LISTING_ID,
+        mockReview.language,
+        expect.objectContaining({ business_name: 'Test Business' }),
+        USER_ID,
+        previousMessages,
       );
     });
 

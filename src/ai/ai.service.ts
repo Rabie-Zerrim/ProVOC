@@ -108,6 +108,7 @@ export class AiService {
     language: string,
     listingContext: object,
     userId: string,
+    previousMessages?: { role: string; content: string }[],
   ): Promise<{ session_id: string; initial_response: string; detected_language: string }> {
     const body: Record<string, unknown> = {
       review_id: reviewId,
@@ -116,6 +117,9 @@ export class AiService {
       language,
       listing_context: listingContext,
     };
+    if (previousMessages !== undefined) {
+      body.previous_messages = previousMessages;
+    }
     return this.post('/api/chat/start', body, await this.getAuthHeaders(userId));
   }
 
