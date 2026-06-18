@@ -4,6 +4,7 @@ import {
   IsInt,
   IsOptional,
   IsIn,
+  IsObject,
   Min,
   Max,
 } from 'class-validator';
@@ -38,4 +39,17 @@ export class UpdateReviewDto {
   @IsOptional()
   @IsString()
   language?: string;
+
+  // Keys vary by business type (e.g. "Food", "Service", "Atmosphere" for a
+  // restaurant; "Rooms", "Cleanliness" for a hotel — see pv-app's
+  // BUSINESS_TYPE_CATEGORIES), so a fixed key whitelist isn't practical here.
+  // Shape validation stops at "is a plain object" at the DTO layer; each
+  // value is checked to be a number in [1, 5] in ReviewsService.update().
+  @ApiPropertyOptional({
+    description: 'Per-category self-rated scores (1-5), e.g. { "Food": 4, "Service": 5 }',
+    example: { Food: 4, Service: 5, Atmosphere: 3 },
+  })
+  @IsOptional()
+  @IsObject()
+  category_ratings?: Record<string, number>;
 }

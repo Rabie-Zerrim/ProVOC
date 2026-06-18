@@ -259,6 +259,7 @@ model Review {
   language       String?              @db.VarChar(10)
   ai_session_id        String?
   conversation_summary String?
+  category_ratings     Json?
   created_at           DateTime             @default(now())
   updated_at     DateTime             @updatedAt
   deleted_at     DateTime?

@@ -554,6 +554,75 @@ describe('ReviewsService', () => {
     });
   });
 
+  // ── update ───────────────────────────────────────────────────────────────────
+
+  describe('update', () => {
+    it('updates review_text without touching category_ratings when not provided', async () => {
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.review.update.mockResolvedValue({ ...mockReview, review_text: 'Updated text' });
+
+      const result = await service.update(USER_ID, REVIEW_ID, { review_text: 'Updated text' });
+
+      expect(prisma.review.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { review_id: REVIEW_ID },
+          data: { review_text: 'Updated text' },
+        }),
+      );
+      expect(result.review_text).toBe('Updated text');
+    });
+
+    it('persists category_ratings when all values are numbers between 1 and 5', async () => {
+      const categoryRatings = { Food: 4, Service: 5, Atmosphere: 3 };
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.review.update.mockResolvedValue({ ...mockReview, category_ratings: categoryRatings });
+
+      const result = await service.update(USER_ID, REVIEW_ID, { category_ratings: categoryRatings });
+
+      expect(prisma.review.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ category_ratings: categoryRatings }),
+        }),
+      );
+      expect(result.category_ratings).toEqual(categoryRatings);
+    });
+
+    it('throws BadRequestException when a category value is above 5, without writing to the DB', async () => {
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+
+      await expect(
+        service.update(USER_ID, REVIEW_ID, { category_ratings: { Food: 6 } }),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.review.update).not.toHaveBeenCalled();
+    });
+
+    it('throws BadRequestException when a category value is not a number, without writing to the DB', async () => {
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+
+      await expect(
+        service.update(USER_ID, REVIEW_ID, { category_ratings: { Food: 'great' as any } }),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.review.update).not.toHaveBeenCalled();
+    });
+
+    it('throws ForbiddenException when the review belongs to another user', async () => {
+      prisma.review.findFirst.mockResolvedValue({ ...mockReview, user_id: OTHER_USER_ID });
+
+      await expect(
+        service.update(USER_ID, REVIEW_ID, { category_ratings: { Food: 4 } }),
+      ).rejects.toThrow(ForbiddenException);
+      expect(prisma.review.update).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException when the review does not exist', async () => {
+      prisma.review.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.update(USER_ID, REVIEW_ID, { review_text: 'x' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
   // ── remove ───────────────────────────────────────────────────────────────────
 
   describe('remove', () => {
@@ -1529,6 +1598,72 @@ describe('ReviewsService', () => {
         expect.objectContaining({ where: expect.objectContaining({ deleted_at: null }) }),
       );
       expect(result).toEqual({ hasRecentReview: false, lastReviewedAt: null });
+    });
+  });
+
+  // ── getCategoryBreakdown ─────────────────────────────────────────────────────
+
+  describe('getCategoryBreakdown', () => {
+    it('averages each category across all reviews that have it set', async () => {
+      prisma.review.findMany.mockResolvedValue([
+        { category_ratings: { Food: 4, Service: 5 } },
+        { category_ratings: { Food: 2, Service: 3 } },
+        { category_ratings: { Food: 5 } },
+      ]);
+
+      const result = await service.getCategoryBreakdown(USER_ID);
+
+      expect(prisma.review.findMany).toHaveBeenCalledWith({
+        where: { user_id: USER_ID, deleted_at: null },
+        select: { category_ratings: true },
+      });
+      expect(result).toEqual({
+        Food: { average: 3.67, count: 3 },
+        Service: { average: 4, count: 2 },
+      });
+    });
+
+    it('skips reviews where category_ratings is null', async () => {
+      prisma.review.findMany.mockResolvedValue([
+        { category_ratings: null },
+        { category_ratings: { Food: 4 } },
+      ]);
+
+      const result = await service.getCategoryBreakdown(USER_ID);
+
+      expect(result).toEqual({ Food: { average: 4, count: 1 } });
+    });
+
+    it('returns an empty object when the user has no reviews with category_ratings', async () => {
+      prisma.review.findMany.mockResolvedValue([
+        { category_ratings: null },
+        { category_ratings: null },
+      ]);
+
+      const result = await service.getCategoryBreakdown(USER_ID);
+
+      expect(result).toEqual({});
+    });
+
+    it('returns an empty object when the user has no reviews at all', async () => {
+      prisma.review.findMany.mockResolvedValue([]);
+
+      const result = await service.getCategoryBreakdown(USER_ID);
+
+      expect(result).toEqual({});
+    });
+
+    it('rounds the average to 2 decimal places', async () => {
+      prisma.review.findMany.mockResolvedValue([
+        { category_ratings: { Food: 4 } },
+        { category_ratings: { Food: 5 } },
+        { category_ratings: { Food: 5 } },
+      ]);
+
+      const result = await service.getCategoryBreakdown(USER_ID);
+
+      expect(result.Food.average).toBe(4.67);
+      expect(result.Food.count).toBe(3);
     });
   });
 });

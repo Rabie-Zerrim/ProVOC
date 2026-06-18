@@ -174,6 +174,29 @@ export class ReviewsController {
     return this.reviewsService.checkRecentReview(req.user.user_id, businessId);
   }
 
+  @Get('category-breakdown')
+  @ApiOperation({
+    summary: 'Average per-category self-rated scores across all of the user\'s reviews',
+    description:
+      'Aggregates category_ratings across every non-deleted review for the authenticated user that has it set. Categories vary by business type, so whatever keys appear are averaged — there is no fixed category list.',
+  })
+  @ApiOkResponse({
+    description: 'Average and count per category',
+    schema: {
+      additionalProperties: {
+        type: 'object',
+        properties: {
+          average: { type: 'number', example: 4.2 },
+          count: { type: 'number', example: 12 },
+        },
+      },
+      example: { Food: { average: 4.2, count: 12 }, Service: { average: 3.8, count: 10 } },
+    },
+  })
+  getCategoryBreakdown(@Request() req) {
+    return this.reviewsService.getCategoryBreakdown(req.user.user_id);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Get full details of a single review' })
   @ApiParam({ name: 'id', description: 'Review UUID' })

@@ -298,6 +298,16 @@ export class ReviewsService {
     if (!review) throw new NotFoundException(`Review ${id} not found`);
     if (review.user_id !== userId) throw new ForbiddenException('Access denied');
 
+    if (dto.category_ratings !== undefined) {
+      for (const [category, value] of Object.entries(dto.category_ratings)) {
+        if (typeof value !== 'number' || value < 1 || value > 5) {
+          throw new BadRequestException(
+            `category_ratings.${category} must be a number between 1 and 5`,
+          );
+        }
+      }
+    }
+
     return this.prisma.review.update({
       where: { review_id: id },
       data: {
@@ -306,6 +316,7 @@ export class ReviewsService {
         ...(dto.tone !== undefined && { tone: dto.tone }),
         ...(dto.status !== undefined && { status: dto.status }),
         ...(dto.language !== undefined && { language: dto.language }),
+        ...(dto.category_ratings !== undefined && { category_ratings: dto.category_ratings }),
       },
       include: {
         business: { select: { name: true } },
@@ -787,6 +798,37 @@ export class ReviewsService {
     const hasRecentReview = lastReview.created_at >= twentyFourHoursAgo;
 
     return { hasRecentReview, lastReviewedAt: lastReview.created_at.toISOString() };
+  }
+
+  async getCategoryBreakdown(userId: string) {
+    const reviews = await this.prisma.review.findMany({
+      where: { user_id: userId, deleted_at: null },
+      select: { category_ratings: true },
+    });
+
+    // Categories vary by business type (see UpdateReviewDto), so aggregate
+    // whatever keys show up across all of the user's reviews rather than
+    // assuming a fixed set.
+    const sums: Record<string, { total: number; count: number }> = {};
+    for (const review of reviews) {
+      const ratings = review.category_ratings as Record<string, unknown> | null;
+      if (!ratings || typeof ratings !== 'object') continue;
+
+      for (const [category, value] of Object.entries(ratings)) {
+        if (typeof value !== 'number') continue;
+        const entry = sums[category] ?? { total: 0, count: 0 };
+        entry.total += value;
+        entry.count += 1;
+        sums[category] = entry;
+      }
+    }
+
+    const breakdown: Record<string, { average: number; count: number }> = {};
+    for (const [category, { total, count }] of Object.entries(sums)) {
+      breakdown[category] = { average: Math.round((total / count) * 100) / 100, count };
+    }
+
+    return breakdown;
   }
 
   async getChatHistory(userId: string, reviewId: string) {
