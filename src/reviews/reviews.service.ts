@@ -317,6 +317,7 @@ export class ReviewsService {
         ...(dto.status !== undefined && { status: dto.status }),
         ...(dto.language !== undefined && { language: dto.language }),
         ...(dto.category_ratings !== undefined && { category_ratings: dto.category_ratings }),
+        ...(dto.selected_networks !== undefined && { selected_networks: dto.selected_networks }),
       },
       include: {
         business: { select: { name: true } },
@@ -751,8 +752,12 @@ export class ReviewsService {
       if (listing.zembra_external_id) {
         url = `https://www.yelp.com/writeareview/biz/${listing.zembra_external_id}`;
       } else {
-        const linkFromExternalUrl = this.extractYelpLinkFromExternalUrl(listing.external_url);
-        url = linkFromExternalUrl ?? `https://www.yelp.com/writeareview/biz/${extId}`;
+        // No real Yelp ID and no usable external_url — extId here is a
+        // synthetic zembra-yelp-<uuid> string, not a real Yelp business ID,
+        // so building writeareview/biz/${extId} would produce a broken link.
+        // Return url: null instead, matching Google's "couldn't find a real
+        // link" shape above.
+        url = this.extractYelpLinkFromExternalUrl(listing.external_url);
       }
     }
 

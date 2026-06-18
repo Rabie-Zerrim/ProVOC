@@ -587,6 +587,34 @@ describe('ReviewsService', () => {
       expect(result.category_ratings).toEqual(categoryRatings);
     });
 
+    it('persists selected_networks when provided', async () => {
+      const selectedNetworks = ['google', 'yelp'];
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.review.update.mockResolvedValue({ ...mockReview, selected_networks: selectedNetworks });
+
+      const result = await service.update(USER_ID, REVIEW_ID, { selected_networks: selectedNetworks });
+
+      expect(prisma.review.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ selected_networks: selectedNetworks }),
+        }),
+      );
+      expect(result.selected_networks).toEqual(selectedNetworks);
+    });
+
+    it('does not touch selected_networks when not provided', async () => {
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.review.update.mockResolvedValue({ ...mockReview, review_text: 'Updated text' });
+
+      await service.update(USER_ID, REVIEW_ID, { review_text: 'Updated text' });
+
+      expect(prisma.review.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { review_text: 'Updated text' },
+        }),
+      );
+    });
+
     it('throws BadRequestException when a category value is above 5, without writing to the DB', async () => {
       prisma.review.findFirst.mockResolvedValue(mockReview);
 
@@ -1367,6 +1395,24 @@ describe('ReviewsService', () => {
       expect(result.platform_name).toBe('Yelp');
     });
 
+    it('Yelp + synthetic zembra-yelp-<uuid> id, no zembra_external_id, no external_url → returns url: null (not a broken writeareview link)', async () => {
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+      prisma.listing.findFirst.mockResolvedValue(
+        makeListingWithNetwork('Yelp', 'zembra-yelp-biz-uuid-1'),
+      );
+      prisma.userPlatformAccount.findFirst.mockResolvedValue(mockAccount);
+      prisma.reviewPlatformPost.create.mockResolvedValue(mockPost);
+
+      const result = await service.getPublishLink(USER_ID, REVIEW_ID, NETWORK_ID);
+
+      expect(result.url).toBeNull();
+      expect(result.url).not.toBe(
+        'https://www.yelp.com/writeareview/biz/zembra-yelp-biz-uuid-1',
+      );
+      expect(result.platform_name).toBe('Yelp');
+      expect(prisma.reviewPlatformPost.create).toHaveBeenCalled();
+    });
+
     it('parses the domain from external_url and constructs the Trustpilot evaluate URL', async () => {
       prisma.review.findFirst.mockResolvedValue(mockReview);
       prisma.listing.findFirst.mockResolvedValue(
@@ -1499,7 +1545,7 @@ describe('ReviewsService', () => {
       expect(prisma.reviewPlatformPost.create).toHaveBeenCalled();
     });
 
-    it('Yelp + osm- id with no usable external_url: falls back to writeareview/biz/{extId}, no Places API call attempted', async () => {
+    it('Yelp + osm- id with no usable external_url and no zembra_external_id: returns url: null instead of a broken writeareview/biz/{extId} link', async () => {
       prisma.review.findFirst.mockResolvedValue(mockReview);
       prisma.listing.findFirst.mockResolvedValue(
         makeListingWithNetwork('Yelp', 'osm-4386938002'),
@@ -1509,7 +1555,7 @@ describe('ReviewsService', () => {
 
       const result = await service.getPublishLink(USER_ID, REVIEW_ID, NETWORK_ID);
 
-      expect(result.url).toBe('https://www.yelp.com/writeareview/biz/osm-4386938002');
+      expect(result.url).toBeNull();
       expect(result.platform_name).toBe('Yelp');
       expect(result.review_text).toBe(mockReview.review_text);
       expect(prisma.reviewPlatformPost.create).toHaveBeenCalled();

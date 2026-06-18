@@ -12,9 +12,9 @@ import {
 import { Type } from 'class-transformer';
 
 export class QueryReviewsDto {
-  @ApiPropertyOptional({ enum: ['draft', 'pending', 'published', 'simulated'] })
+  @ApiPropertyOptional({ enum: ['draft', 'pending', 'published', 'posted'] })
   @IsOptional()
-  @IsIn(['draft', 'pending', 'published', 'simulated'])
+  @IsIn(['draft', 'pending', 'published', 'posted'])
   status?: string;
 
   @ApiPropertyOptional({ description: 'Comma-separated list of statuses, e.g. draft,pending' })

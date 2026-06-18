@@ -5,6 +5,7 @@ import {
   IsOptional,
   IsIn,
   IsObject,
+  IsArray,
   Min,
   Max,
 } from 'class-validator';
@@ -29,10 +30,10 @@ export class UpdateReviewDto {
 
   @ApiPropertyOptional({
     description: 'Updated status',
-    enum: ['draft', 'pending', 'published', 'simulated'],
+    enum: ['draft', 'pending', 'published', 'posted'],
   })
   @IsOptional()
-  @IsIn(['draft', 'pending', 'published', 'simulated'])
+  @IsIn(['draft', 'pending', 'published', 'posted'])
   status?: string;
 
   @ApiPropertyOptional({ description: 'BCP-47 language code', example: 'en' })
@@ -52,4 +53,13 @@ export class UpdateReviewDto {
   @IsOptional()
   @IsObject()
   category_ratings?: Record<string, number>;
+
+  @ApiPropertyOptional({
+    description: 'Network slugs the user selected for this review\'s posting flow, e.g. ["google", "yelp"]',
+    example: ['google', 'yelp'],
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  selected_networks?: string[];
 }
