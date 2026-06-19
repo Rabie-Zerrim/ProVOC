@@ -1773,4 +1773,54 @@ ngrok free-tier URLs are ephemeral — every restart generates a new URL, requir
 
 ---
 
-*This document reflects the state of the project as of 2026-06-17.*
+## 29. SESSION 2026-06-19 — PROFILE MODULE, CATEGORY RATINGS, STATUS-ENUM FIXES, AND AI CONTEXT FORWARDING
+
+### 1. Duplicate-Google-network bug (fixed)
+
+`ListingsService.ensureNetwork()` created a separate `Network` row per Google Places result suffix (`google_1`, `google_2`, etc.) instead of reusing the canonical `Google` row, since those slugs weren't in `SLUG_TO_NAME`. Fixed by normalizing any slug starting with `"google"` to `'Google'` before the lookup, case-insensitive. 2 new tests. A standalone cleanup script (`cleanup_duplicate_google_networks.js`) was written to re-point existing bad listings on Railway and remove orphaned rows — written but deliberately left for manual review/execution rather than auto-run.
+
+### 2. New endpoint: `GET /reviews/recent-check`
+
+`?business_id={uuid}` returns `{ hasRecentReview: boolean, lastReviewedAt: string | null }` — lets pv-app show a soft warning before re-reviewing a business reviewed in the last 24h. 4 new tests.
+
+### 3. New `src/users/` module (profile management) — did not exist before
+
+Four new authenticated endpoints:
+- **`PATCH /users/me`** — update `display_name`/`email`; 409 if email belongs to another user.
+- **`GET /users/me/preferences`**, **`PATCH /users/me/preferences`** — upserts `UserPreference`; `preferred_networks` is an **ENABLED**-platforms list (inclusion, not exclusion — confirmed final semantics); new users default to `['google', 'yelp']`.
+- **`PATCH /users/me/avatar`** — avatar stored as a base64 data URI directly in Postgres (new `User.avatar_data String? @db.Text` column + migration) — explicitly **not** S3, a deliberate time-constrained choice for now. 2MB decoded-size limit, 400 if exceeded.
+- **`PATCH /users/me/password`** — bcrypt-compares current password (401 if wrong), bcrypt-hashes new password (10 rounds), mirrors `auth.service.ts`'s existing patterns.
+
+`GET /auth/me` extended to also return `avatar_data` (previously only `user_id`/`email`/`display_name`).
+
+### 4. Review category ratings + breakdown
+
+New nullable `Review.category_ratings Json?` column + migration. `PATCH /reviews/:id` accepts optional `category_ratings` (e.g. `{"Food": 4, "Service": 5}`) — validated as a plain object at the DTO layer; each value range-checked to 1-5 inside the service (no fixed key whitelist, since categories vary per business type). New `GET /reviews/category-breakdown` aggregates `{ average, count }` per category across a user's reviews. Frontend: written by `app/review/breakdown.tsx` (previously captured ratings locally with no persistence at all) and surfaced on pv-app's profile tab as a "Your Ratings" card.
+
+### 5. Two stale-enum bugs (same root cause, two call sites) — fixed
+
+Both `UpdateReviewDto` (`PATCH /reviews/:id`) and `QueryReviewsDto` (`GET /reviews?status=`) validated `status` against `['draft', 'pending', 'published', 'simulated']` — `'simulated'` was never a real value used anywhere in app logic, and `'posted'` (the actual value `REVIEW_STATUSES` uses, and what pv-app's mark-as-posted flow and "Published" tab filter both send) was missing entirely. Both were silently 400ing — meaning `result.tsx`'s "mark as posted" confirmation, **and** pv-app's entire "Published" tab/filter, had been broken for an unknown period before this session. Both now validate against `['draft', 'pending', 'published', 'posted']`.
+
+### 6. Yelp publish-link last-resort case — fixed
+
+When a Yelp listing has neither a real `zembra_external_id` nor a usable `external_url`, `getPublishLink()` was building `writeareview/biz/{extId}` using the synthetic `zembra-yelp-<uuid>` placeholder directly — a guaranteed-broken URL. Now returns `url: null` in that case, matching Google's branch shape (already handled by pv-app's existing fallback chain).
+
+### 7. regenerate/rephrase AI context bug — fixed (significant)
+
+`ReviewsService.startChat()` accepted `body.previous_messages` (sent correctly by pv-app's regenerate action) but never forwarded it anywhere — it always synthesized its own generic "continue refining" transcript instead, silently discarding real conversation context. Root cause of "regenerate ignores new messages" reported and investigated this session. Now `previous_messages` flows through `StartChatDto` → `startChat()` → `AiService.startChat()` → pv-ai, additively (the normal/fresh-chat transcript-synthesis path is untouched). New `src/ai/ai.service.spec.ts` (zero tests existed for this service before). See `HANDOVER_AI.md` for the complementary pv-ai-side prompt-routing work built on top of this fix.
+
+### 8. Outstanding: `purpose` field not yet forwarded to pv-ai
+
+pv-ai now supports a `purpose` field (`Literal["start","regenerate"]` on `chat/start`, `Literal["message","rephrase"]` on `chat/message`) to select dedicated prompts per action — see `HANDOVER_AI.md`. pv-bff's `StartChatDto` and the send-message DTO need a corresponding optional `purpose` field, with `startChat()` passing `"regenerate"` for its regenerate call site (not fresh/resumed chats) and `sendMessage()` passing `"rephrase"` for its rephrase call site (not normal messages) — both call sites already exist and already distinguish these cases internally, this is purely about forwarding the right value through. **Not yet implemented.**
+
+### 9. `selected_networks` field (network-slug persistence for review posting)
+
+New nullable `Review.selected_networks Json?` column + migration. `UpdateReviewDto.selected_networks?: string[]`, persisted in `update()`. Purpose: pv-app's `result.tsx` persists which network slugs were actually selected during the live search→select→post flow, fixing a bug where reopening an old review from the Reviews tab always showed every platform the listing had (instead of just the ones originally chosen) since the original selection only ever existed as a transient navigation param with nowhere to persist.
+
+### Test count
+
+96 (last recorded, §26) → 162 passing. `tsc --noEmit` clean.
+
+---
+
+*This document reflects the state of the project as of 2026-06-19.*
