@@ -1912,3 +1912,38 @@ This makes `POST /reviews` idempotent for draft reviews: repeated calls from the
 ### Test count
 
 164 (§30) → **165 passing**. `tsc --noEmit` clean.
+
+---
+
+## 32. SESSION 2026-06-24 — PATCH /reviews/:id FLOAT RATING FIX
+
+### Bug
+
+`UpdateReviewDto.rating` was decorated with `@IsInt()` only. class-validator's `@IsInt()` calls `Number.isInteger()` — any float value from pv-ai's `chat/approve` response (e.g. `4.5`, `3.7`) caused a 400 before `ReviewsService.update()` was ever reached.
+
+The failure path in `chat.tsx`: `handleRetry` and `handleRegenerate` both call `chat/approve` and forward `approveData.rating` verbatim to `PATCH /reviews/:id`. When pv-ai returns a non-integer rating the PATCH 400s, the catch block fires, and `setGeneratedReview(prev)` reverts the displayed review text — making the rephrase/regenerate appear to silently fail even though the AI call succeeded.
+
+### Fix
+
+Added `@Transform(({ value }) => Math.round(Number(value)))` before `@IsInt()` in `UpdateReviewDto`. class-transformer runs transforms before class-validator checks, so any float is rounded to the nearest integer before validation. `Math.round(Number(value))` also guards against string inputs (e.g. `"4"` from query params).
+
+```typescript
+import { Transform } from 'class-transformer';
+
+@IsOptional()
+@Transform(({ value }) => Math.round(Number(value)))
+@IsInt()
+@Min(1)
+@Max(5)
+rating?: number;
+```
+
+### Files changed
+
+| File | Change |
+|---|---|
+| [src/reviews/dto/update-review.dto.ts](src/reviews/dto/update-review.dto.ts) | Added `Transform` import; added `@Transform(({ value }) => Math.round(Number(value)))` before `@IsInt()` on `rating` |
+
+### Test count
+
+**165 passing** (unchanged — existing tests cover the rating field; no new test needed as the transform is a DTO-layer coercion with no service-level logic). `tsc --noEmit` clean.

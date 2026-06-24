@@ -9,6 +9,7 @@ import {
   Min,
   Max,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
 
 export class UpdateReviewDto {
   @ApiPropertyOptional({ description: 'Updated review text' })
@@ -18,6 +19,7 @@ export class UpdateReviewDto {
 
   @ApiPropertyOptional({ description: 'Updated rating (1–5)', minimum: 1, maximum: 5 })
   @IsOptional()
+  @Transform(({ value }) => Math.round(Number(value)))
   @IsInt()
   @Min(1)
   @Max(5)
