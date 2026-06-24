@@ -1870,3 +1870,45 @@ No other endpoints are throttled. The `ThrottlerGuard` is not registered as `APP
 ### Test count
 
 162 (§29) → **164 passing**. `tsc --noEmit` clean.
+
+---
+
+## 31. SESSION 2026-06-24 — DUPLICATE REVIEW GUARD (BACKEND)
+
+### Root cause
+
+`ReviewsService.create()` was unconditional — every `POST /reviews` call inserted a new row regardless of whether the user already had a draft for the same listing. Three frontend paths could trigger this:
+
+1. `chat.tsx initChat()` fires on every fresh component mount, and `router.push('/review/chat', params)` without a `review_id` param causes a fresh mount each time (e.g. after pressing Back and re-entering).
+2. `recording.tsx stopAndTranscribe()` has the same `POST /reviews` guard but `withNetworkErrorRetry` wrapping it could silently retry, inserting a second row if the server processed the first request but the network dropped the response.
+3. The `recent-check` endpoint (`GET /reviews/recent-check`) is called 3–4 navigation steps before review creation and provides no protection at the actual create call site.
+
+### Fix: idempotency guard in `create()`
+
+`ReviewsService.create()` now checks for an existing non-deleted draft before inserting:
+
+```typescript
+const existing = await this.prisma.review.findFirst({
+  where: { user_id: userId, listing_id: dto.listing_id, status: 'draft', deleted_at: null },
+  include: {
+    business: { select: { name: true, address: true } },
+    listing: { select: { external_url: true } },
+  },
+});
+if (existing) return existing;
+```
+
+If a draft already exists for this `(user_id, listing_id)` pair, it is returned as-is — no second row is inserted. The `include` clause matches the `create` call so the response shape is identical either way. The `deleted_at: null` guard ensures soft-deleted drafts are not resurrected.
+
+This makes `POST /reviews` idempotent for draft reviews: repeated calls from the same user for the same listing return the same object.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| [src/reviews/reviews.service.ts](src/reviews/reviews.service.ts) | `create()`: added `findFirst` check before `prisma.review.create` |
+| [src/reviews/reviews.service.spec.ts](src/reviews/reviews.service.spec.ts) | Added 1 test: `returns existing draft without inserting when a draft for the same listing already exists` — asserts `prisma.review.findFirst` is called with correct where clause, `prisma.review.create` is NOT called, and the existing draft is returned |
+
+### Test count
+
+164 (§30) → **165 passing**. `tsc --noEmit` clean.

@@ -186,6 +186,26 @@ describe('ReviewsService', () => {
       await expect(service.create(USER_ID, dto)).rejects.toThrow(NotFoundException);
       expect(prisma.review.create).not.toHaveBeenCalled();
     });
+
+    it('returns existing draft without inserting when a draft for the same listing already exists', async () => {
+      prisma.listing.findUnique.mockResolvedValue(mockListing);
+      prisma.review.findFirst.mockResolvedValue(mockReview);
+
+      const result = await service.create(USER_ID, dto);
+
+      expect(prisma.review.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            user_id: USER_ID,
+            listing_id: LISTING_ID,
+            status: 'draft',
+            deleted_at: null,
+          }),
+        }),
+      );
+      expect(prisma.review.create).not.toHaveBeenCalled();
+      expect(result).toEqual(mockReview);
+    });
   });
 
   // ── findAll ──────────────────────────────────────────────────────────────────

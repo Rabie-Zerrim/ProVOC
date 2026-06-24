@@ -39,6 +39,15 @@ export class ReviewsService {
     });
     if (!listing) throw new NotFoundException(`Listing ${dto.listing_id} not found`);
 
+    const existing = await this.prisma.review.findFirst({
+      where: { user_id: userId, listing_id: dto.listing_id, status: 'draft', deleted_at: null },
+      include: {
+        business: { select: { name: true, address: true } },
+        listing: { select: { external_url: true } },
+      },
+    });
+    if (existing) return existing;
+
     return this.prisma.review.create({
       data: {
         user_id: userId,
