@@ -1824,3 +1824,49 @@ New nullable `Review.selected_networks Json?` column + migration. `UpdateReviewD
 ---
 
 *This document reflects the state of the project as of 2026-06-19.*
+
+---
+
+## 30. SESSION 2026-06-24 — PURPOSE FIELD, TEST-DB GUARD, RATE LIMITING
+
+### 1. `purpose` field forwarded to pv-ai (§29 item 8 — now implemented)
+
+pv-ai's `chat/start` and `chat/message` endpoints accept a `purpose` discriminator to select dedicated prompts per action. This session wires the corresponding field through from the BFF DTOs all the way to pv-ai.
+
+**`StartChatDto`** (`src/reviews/dto/start-chat.dto.ts`): added `purpose?: 'start' | 'regenerate'` with `@IsOptional() @IsIn(...)` validation.
+
+**New `SendMessageDto`** (`src/reviews/dto/send-message.dto.ts`): `message: string`, `session_id?: string`, `purpose?: 'message' | 'rephrase'`. The controller's `POST :id/chat/message` endpoint now uses this DTO instead of bare `@Body('message')` / `@Body('session_id')` decorators.
+
+**`AiService.startChat()`**: added `purpose?: 'start' | 'regenerate'` as the 8th parameter; always included in the pv-ai request body as `purpose ?? 'start'`.
+
+**`AiService.sendMessage()`**: added `purpose?: 'message' | 'rephrase'` as the 4th parameter; always included in the pv-ai request body as `purpose ?? 'message'`.
+
+**`ReviewsService.startChat()`**: computes `purpose = (body?.previous_messages && body.previous_messages.length > 0) ? 'regenerate' : 'start'` and passes it as the new 8th arg — so the regenerate call site (the one forwarding `previous_messages`) sends `'regenerate'` and every plain/resume chat sends `'start'`.
+
+**`ReviewsService.sendMessage()`**: computes `msgPurpose = message.startsWith('Please rewrite this review') ? 'rephrase' : 'message'` before the AI call — the rephrase guard that already skips DB writes now also tags the pv-ai call with `'rephrase'`; all other messages use `'message'`.
+
+**Tests**: 5 existing `aiService.startChat.toHaveBeenCalledWith` assertions updated to include the new `purpose` 8th arg; 2 existing `aiService.sendMessage.toHaveBeenCalledWith` assertions updated to include the new `purpose` 4th arg; 2 new tests added — `forwards purpose:"regenerate" to AiService when body contains previous_messages` and `forwards purpose:"rephrase" to AiService when message is a rephrase instruction`.
+
+---
+
+### 2. `GET /test-db` gated by NODE_ENV
+
+`AppController.testDb()` now throws `NotFoundException` when `process.env.NODE_ENV === 'production'`. The endpoint remains accessible in `development` and `test` environments for local DB health checks. No new dependency — uses `process.env` directly. File: `src/app.controller.ts`.
+
+---
+
+### 3. Rate limiting on `POST /auth/login`
+
+**Package installed:** `@nestjs/throttler` v6.5.0.
+
+**Global config** (`src/app.module.ts`): `ThrottlerModule.forRoot([{ ttl: 60000, limit: 100 }])` — 100 requests per 60 s as a broad global baseline (not applied globally via `APP_GUARD`; guard is applied only where needed).
+
+**Login endpoint** (`src/auth/auth.controller.ts`): `@UseGuards(ThrottlerGuard)` + `@Throttle({ default: { ttl: 60000, limit: 5 } })` — limits each IP to 5 login attempts per 60 s. Returns HTTP 429 on breach.
+
+No other endpoints are throttled. The `ThrottlerGuard` is not registered as `APP_GUARD` to avoid unintended 429s on AI/upload endpoints under load.
+
+---
+
+### Test count
+
+162 (§29) → **164 passing**. `tsc --noEmit` clean.

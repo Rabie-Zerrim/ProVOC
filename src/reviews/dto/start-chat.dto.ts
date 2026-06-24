@@ -1,4 +1,4 @@
-import { IsArray, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { IsArray, IsIn, IsOptional, IsString, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class ListingContextDto {
@@ -26,4 +26,8 @@ export class StartChatDto {
   @ValidateNested({ each: true })
   @Type(() => PreviousMessageDto)
   previous_messages?: PreviousMessageDto[];
+
+  @IsOptional()
+  @IsIn(['start', 'regenerate'])
+  purpose?: 'start' | 'regenerate';
 }

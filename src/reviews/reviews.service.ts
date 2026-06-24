@@ -532,6 +532,7 @@ export class ReviewsService {
       ? `The current review text is: "${review.review_text}".${summaryContext}\nThe user wants to continue refining it. Ask them what they would like to change.`
       : review.review_text;
 
+    const purpose = body?.previous_messages && body.previous_messages.length > 0 ? 'regenerate' : 'start';
     const result = await this.aiService.startChat(
       reviewId,
       transcript,
@@ -540,6 +541,7 @@ export class ReviewsService {
       listingContext,
       userId,
       body?.previous_messages,
+      purpose,
     );
 
     await this.prisma.review.update({
@@ -560,7 +562,8 @@ export class ReviewsService {
     const sid = sessionId ?? review.ai_session_id;
     if (!sid) throw new BadRequestException('No active AI session for this review');
 
-    const aiResponse = await this.aiService.sendMessage(sid, message, userId);
+    const msgPurpose = message.startsWith('Please rewrite this review') ? 'rephrase' : 'message';
+    const aiResponse = await this.aiService.sendMessage(sid, message, userId, msgPurpose);
 
     if (!message.startsWith('Please rewrite this review')) {
       await this.prisma.reviewChatMessage.createMany({

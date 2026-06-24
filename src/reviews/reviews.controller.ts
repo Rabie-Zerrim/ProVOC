@@ -34,6 +34,7 @@ import { UpdateReviewDto } from './dto/update-review.dto';
 import { QueryReviewsDto } from './dto/query-reviews.dto';
 import { PublishReviewDto } from './dto/publish-review.dto';
 import { StartChatDto } from './dto/start-chat.dto';
+import { SendMessageDto } from './dto/send-message.dto';
 
 @ApiTags('reviews')
 @ApiBearerAuth('access-token')
@@ -407,7 +408,11 @@ export class ReviewsController {
     schema: {
       type: 'object',
       required: ['message'],
-      properties: { message: { type: 'string', example: 'Make it more professional' } },
+      properties: {
+        message: { type: 'string', example: 'Make it more professional' },
+        session_id: { type: 'string' },
+        purpose: { type: 'string', enum: ['message', 'rephrase'] },
+      },
     },
   })
   @ApiCreatedResponse({
@@ -425,10 +430,9 @@ export class ReviewsController {
   sendMessage(
     @Request() req,
     @Param('id') id: string,
-    @Body('message') message: string,
-    @Body('session_id') sessionId?: string,
+    @Body() dto: SendMessageDto,
   ) {
-    return this.reviewsService.sendMessage(req.user.user_id, id, message, sessionId);
+    return this.reviewsService.sendMessage(req.user.user_id, id, dto.message, dto.session_id);
   }
 
   @Post(':id/chat/approve')

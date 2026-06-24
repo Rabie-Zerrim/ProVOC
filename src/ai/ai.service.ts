@@ -109,6 +109,7 @@ export class AiService {
     listingContext: object,
     userId: string,
     previousMessages?: { role: string; content: string }[],
+    purpose?: 'start' | 'regenerate',
   ): Promise<{ session_id: string; initial_response: string; detected_language: string }> {
     const body: Record<string, unknown> = {
       review_id: reviewId,
@@ -116,6 +117,7 @@ export class AiService {
       listing_id: listingId,
       language,
       listing_context: listingContext,
+      purpose: purpose ?? 'start',
     };
     if (previousMessages !== undefined) {
       body.previous_messages = previousMessages;
@@ -127,8 +129,9 @@ export class AiService {
     sessionId: string,
     message: string,
     userId: string,
+    purpose?: 'message' | 'rephrase',
   ): Promise<{ response: string; session_id: string }> {
-    return this.post('/api/chat/message', { session_id: sessionId, message }, await this.getAuthHeaders(userId));
+    return this.post('/api/chat/message', { session_id: sessionId, message, purpose: purpose ?? 'message' }, await this.getAuthHeaders(userId));
   }
 
   async approveDraft(

@@ -945,6 +945,7 @@ describe('ReviewsService', () => {
         }),
         USER_ID,
         undefined,
+        'start',
       );
       expect(prisma.review.update).toHaveBeenCalledWith({
         where: { review_id: REVIEW_ID },
@@ -974,6 +975,7 @@ describe('ReviewsService', () => {
         expect.objectContaining({ business_name: 'Test Business' }),
         USER_ID,
         undefined,
+        'start',
       );
       expect(prisma.reviewChatMessage.create).not.toHaveBeenCalled();
       expect(prisma.reviewChatMessage.createMany).not.toHaveBeenCalled();
@@ -1004,6 +1006,7 @@ describe('ReviewsService', () => {
         expect.objectContaining({ business_name: 'Test Business' }),
         USER_ID,
         undefined,
+        'start',
       );
     });
 
@@ -1031,6 +1034,7 @@ describe('ReviewsService', () => {
         expect.objectContaining({ business_name: 'Test Business' }),
         USER_ID,
         undefined,
+        'start',
       );
     });
 
@@ -1058,6 +1062,28 @@ describe('ReviewsService', () => {
         expect.objectContaining({ business_name: 'Test Business' }),
         USER_ID,
         previousMessages,
+        'regenerate',
+      );
+    });
+
+    it('forwards purpose:"regenerate" to AiService when body contains previous_messages', async () => {
+      const previousMessages = [{ role: 'user', content: 'original turn' }];
+      prisma.review.findFirst.mockResolvedValue({ ...mockReview, business: { name: 'Test Business' } });
+      prisma.listing.findMany.mockResolvedValue([mockListingWithNetwork]);
+      aiService.startChat.mockResolvedValue({ session_id: 'sid', initial_response: 'ok', detected_language: 'en' });
+      prisma.review.update.mockResolvedValue({});
+
+      await service.startChat(USER_ID, REVIEW_ID, { previous_messages: previousMessages } as any);
+
+      expect(aiService.startChat).toHaveBeenCalledWith(
+        REVIEW_ID,
+        expect.any(String),
+        LISTING_ID,
+        mockReview.language,
+        expect.objectContaining({ business_name: 'Test Business' }),
+        USER_ID,
+        previousMessages,
+        'regenerate',
       );
     });
 
@@ -1089,7 +1115,7 @@ describe('ReviewsService', () => {
 
       const result = await service.sendMessage(USER_ID, REVIEW_ID, 'Make it shorter');
 
-      expect(aiService.sendMessage).toHaveBeenCalledWith('session-123', 'Make it shorter', USER_ID);
+      expect(aiService.sendMessage).toHaveBeenCalledWith('session-123', 'Make it shorter', USER_ID, 'message');
       expect(result).toEqual({ response: 'Sure!', session_id: 'session-123' });
     });
 
@@ -1107,9 +1133,24 @@ describe('ReviewsService', () => {
         'session-123',
         'Please rewrite this review with different wording',
         USER_ID,
+        'rephrase',
       );
       expect(prisma.reviewChatMessage.createMany).not.toHaveBeenCalled();
       expect(result).toEqual({ response: 'Rephrased!', session_id: 'session-123' });
+    });
+
+    it('forwards purpose:"rephrase" to AiService when message is a rephrase instruction', async () => {
+      prisma.review.findFirst.mockResolvedValue({ ...mockReview, ai_session_id: 'session-123' });
+      aiService.sendMessage.mockResolvedValue({ response: 'Rephrased!', session_id: 'session-123' });
+
+      await service.sendMessage(USER_ID, REVIEW_ID, 'Please rewrite this review in a friendlier tone');
+
+      expect(aiService.sendMessage).toHaveBeenCalledWith(
+        'session-123',
+        'Please rewrite this review in a friendlier tone',
+        USER_ID,
+        'rephrase',
+      );
     });
   });
 
