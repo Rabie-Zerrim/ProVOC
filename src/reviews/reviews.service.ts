@@ -533,13 +533,18 @@ export class ReviewsService {
       context_note: body?.listing_context?.context_note ?? '',
     };
 
-    const summaryContext = review.conversation_summary
-      ? `\nContext from previous session:\n${review.conversation_summary}`
-      : '';
-
     const transcript = review.review_text
-      ? `The current review text is: "${review.review_text}".${summaryContext}\nThe user wants to continue refining it. Ask them what they would like to change.`
+      ? `The current review text is: "${review.review_text}".\nThe user wants to continue refining it. Ask them what they would like to change.`
       : review.review_text;
+
+    let conversationSummary: string | null = null;
+    if (review.review_text) {
+      const summaryRecord = await this.prisma.conversationSummary.findFirst({
+        where: { review_id: reviewId },
+        orderBy: { created_at: 'desc' },
+      });
+      conversationSummary = summaryRecord?.summary ?? null;
+    }
 
     const purpose = body?.previous_messages && body.previous_messages.length > 0 ? 'regenerate' : 'start';
     const result = await this.aiService.startChat(
@@ -551,6 +556,7 @@ export class ReviewsService {
       userId,
       body?.previous_messages,
       purpose,
+      conversationSummary,
     );
 
     await this.prisma.review.update({
@@ -608,6 +614,12 @@ export class ReviewsService {
         conversation_summary: result.conversation_summary,
       },
     });
+
+    if (result.conversation_summary) {
+      await this.prisma.conversationSummary.create({
+        data: { review_id: reviewId, summary: result.conversation_summary },
+      });
+    }
 
     const existingDraft = await this.prisma.reviewDraft.findFirst({
       where: { review_id: reviewId },
@@ -884,5 +896,14 @@ export class ReviewsService {
       is_selected: d.is_selected,
       created_at: d.created_at,
     }));
+  }
+
+  async filterReviewText(userId: string, reviewId: string, text: string): Promise<any> {
+    const review = await this.prisma.review.findFirst({
+      where: { review_id: reviewId, deleted_at: null },
+    });
+    if (!review) throw new NotFoundException(`Review ${reviewId} not found`);
+    if (review.user_id !== userId) throw new ForbiddenException('Access denied');
+    return this.aiService.filterReviewText(userId, text);
   }
 }

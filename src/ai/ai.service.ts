@@ -110,6 +110,7 @@ export class AiService {
     userId: string,
     previousMessages?: { role: string; content: string }[],
     purpose?: 'start' | 'regenerate',
+    conversationSummary?: string | null,
   ): Promise<{ session_id: string; initial_response: string; detected_language: string }> {
     const body: Record<string, unknown> = {
       review_id: reviewId,
@@ -121,6 +122,9 @@ export class AiService {
     };
     if (previousMessages !== undefined) {
       body.previous_messages = previousMessages;
+    }
+    if (conversationSummary) {
+      body.conversation_summary = conversationSummary;
     }
     return this.post('/api/chat/start', body, await this.getAuthHeaders(userId));
   }
@@ -166,6 +170,14 @@ export class AiService {
       return Array.isArray(result) ? result : [];
     } catch {
       return [];
+    }
+  }
+
+  async filterReviewText(userId: string, text: string): Promise<any> {
+    try {
+      return await this.post<any>('/api/chat/filter', { text }, await this.getAuthHeaders(userId));
+    } catch {
+      return { approved: true };
     }
   }
 }

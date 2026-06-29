@@ -61,6 +61,7 @@ describe('ReviewsService', () => {
     sendMessage: jest.Mock;
     approveDraft: jest.Mock;
     endSession: jest.Mock;
+    filterReviewText: jest.Mock;
   };
   let prisma: {
     listing: { findUnique: jest.Mock; findMany: jest.Mock; findFirst: jest.Mock };
@@ -77,6 +78,7 @@ describe('ReviewsService', () => {
     network: { findUnique: jest.Mock };
     reviewDraft: { findFirst: jest.Mock; findMany: jest.Mock; updateMany: jest.Mock; upsert: jest.Mock };
     reviewChatMessage: { create: jest.Mock; createMany: jest.Mock; findMany: jest.Mock };
+    conversationSummary: { create: jest.Mock; findFirst: jest.Mock };
     userPlatformAccount: { findFirst: jest.Mock; create: jest.Mock };
     reviewPlatformPost: {
       create: jest.Mock;
@@ -98,6 +100,7 @@ describe('ReviewsService', () => {
       sendMessage: jest.fn(),
       approveDraft: jest.fn(),
       endSession: jest.fn(),
+      filterReviewText: jest.fn(),
     };
 
     prisma = {
@@ -115,6 +118,7 @@ describe('ReviewsService', () => {
       network: { findUnique: jest.fn() },
       reviewDraft: { findFirst: jest.fn(), findMany: jest.fn(), updateMany: jest.fn(), upsert: jest.fn() },
       reviewChatMessage: { create: jest.fn(), createMany: jest.fn(), findMany: jest.fn() },
+      conversationSummary: { create: jest.fn(), findFirst: jest.fn() },
       userPlatformAccount: { findFirst: jest.fn(), create: jest.fn() },
       reviewPlatformPost: {
         create: jest.fn(),
@@ -943,6 +947,7 @@ describe('ReviewsService', () => {
     it('builds correct listingContext and stores session_id on the review', async () => {
       prisma.review.findFirst.mockResolvedValue({ ...mockReview, business: { name: 'Test Business' } });
       prisma.listing.findMany.mockResolvedValue([mockListingWithNetwork]);
+      prisma.conversationSummary.findFirst.mockResolvedValue(null);
       aiService.startChat.mockResolvedValue({
         session_id: 'session-123',
         initial_response: 'Hello!',
@@ -966,6 +971,7 @@ describe('ReviewsService', () => {
         USER_ID,
         undefined,
         'start',
+        null,
       );
       expect(prisma.review.update).toHaveBeenCalledWith({
         where: { review_id: REVIEW_ID },
@@ -996,19 +1002,18 @@ describe('ReviewsService', () => {
         USER_ID,
         undefined,
         'start',
+        null,
       );
+      expect(prisma.conversationSummary.findFirst).not.toHaveBeenCalled();
       expect(prisma.reviewChatMessage.create).not.toHaveBeenCalled();
       expect(prisma.reviewChatMessage.createMany).not.toHaveBeenCalled();
     });
 
-    it('includes conversation_summary in resume transcript when present', async () => {
+    it('queries conversationSummary table and passes the latest summary to aiService.startChat', async () => {
       const summary = 'User loved the food, had issues with service.';
-      prisma.review.findFirst.mockResolvedValue({
-        ...mockReview,
-        conversation_summary: summary,
-        business: { name: 'Test Business' },
-      });
+      prisma.review.findFirst.mockResolvedValue({ ...mockReview, business: { name: 'Test Business' } });
       prisma.listing.findMany.mockResolvedValue([mockListingWithNetwork]);
+      prisma.conversationSummary.findFirst.mockResolvedValue({ summary, review_id: REVIEW_ID, created_at: new Date() });
       aiService.startChat.mockResolvedValue({
         session_id: 'session-789',
         initial_response: 'Hello!',
@@ -1018,25 +1023,27 @@ describe('ReviewsService', () => {
 
       await service.startChat(USER_ID, REVIEW_ID);
 
+      expect(prisma.conversationSummary.findFirst).toHaveBeenCalledWith({
+        where: { review_id: REVIEW_ID },
+        orderBy: { created_at: 'desc' },
+      });
       expect(aiService.startChat).toHaveBeenCalledWith(
         REVIEW_ID,
-        `The current review text is: "${mockReview.review_text}".\nContext from previous session:\n${summary}\nThe user wants to continue refining it. Ask them what they would like to change.`,
+        `The current review text is: "${mockReview.review_text}".\nThe user wants to continue refining it. Ask them what they would like to change.`,
         LISTING_ID,
         mockReview.language,
         expect.objectContaining({ business_name: 'Test Business' }),
         USER_ID,
         undefined,
         'start',
+        summary,
       );
     });
 
-    it('builds resume transcript without summary when conversation_summary is null', async () => {
-      prisma.review.findFirst.mockResolvedValue({
-        ...mockReview,
-        conversation_summary: null,
-        business: { name: 'Test Business' },
-      });
+    it('passes null conversation_summary to aiService when no summary record exists', async () => {
+      prisma.review.findFirst.mockResolvedValue({ ...mockReview, business: { name: 'Test Business' } });
       prisma.listing.findMany.mockResolvedValue([mockListingWithNetwork]);
+      prisma.conversationSummary.findFirst.mockResolvedValue(null);
       aiService.startChat.mockResolvedValue({
         session_id: 'session-000',
         initial_response: 'Hello!',
@@ -1055,7 +1062,23 @@ describe('ReviewsService', () => {
         USER_ID,
         undefined,
         'start',
+        null,
       );
+    });
+
+    it('does not query conversationSummary table when review_text is empty', async () => {
+      prisma.review.findFirst.mockResolvedValue({ ...mockReview, review_text: '', business: { name: 'Test Business' } });
+      prisma.listing.findMany.mockResolvedValue([mockListingWithNetwork]);
+      aiService.startChat.mockResolvedValue({
+        session_id: 'session-empty',
+        initial_response: 'Hello!',
+        detected_language: 'en',
+      });
+      prisma.review.update.mockResolvedValue({});
+
+      await service.startChat(USER_ID, REVIEW_ID);
+
+      expect(prisma.conversationSummary.findFirst).not.toHaveBeenCalled();
     });
 
     it('forwards body.previous_messages through to AiService.startChat for regenerate/rephrase', async () => {
@@ -1065,6 +1088,7 @@ describe('ReviewsService', () => {
       ];
       prisma.review.findFirst.mockResolvedValue({ ...mockReview, business: { name: 'Test Business' } });
       prisma.listing.findMany.mockResolvedValue([mockListingWithNetwork]);
+      prisma.conversationSummary.findFirst.mockResolvedValue(null);
       aiService.startChat.mockResolvedValue({
         session_id: 'session-regen',
         initial_response: 'Hello!',
@@ -1083,6 +1107,7 @@ describe('ReviewsService', () => {
         USER_ID,
         previousMessages,
         'regenerate',
+        null,
       );
     });
 
@@ -1090,6 +1115,7 @@ describe('ReviewsService', () => {
       const previousMessages = [{ role: 'user', content: 'original turn' }];
       prisma.review.findFirst.mockResolvedValue({ ...mockReview, business: { name: 'Test Business' } });
       prisma.listing.findMany.mockResolvedValue([mockListingWithNetwork]);
+      prisma.conversationSummary.findFirst.mockResolvedValue(null);
       aiService.startChat.mockResolvedValue({ session_id: 'sid', initial_response: 'ok', detected_language: 'en' });
       prisma.review.update.mockResolvedValue({});
 
@@ -1104,6 +1130,7 @@ describe('ReviewsService', () => {
         USER_ID,
         previousMessages,
         'regenerate',
+        null,
       );
     });
 
@@ -1217,12 +1244,50 @@ describe('ReviewsService', () => {
     });
 
     it('saves conversation_summary to review when approve returns it', async () => {
-      const summaryResult = {
-        ...mockApproveResult,
-        conversation_summary: 'The user had a great experience with the staff.',
-      };
+      const summary = 'The user had a great experience with the staff.';
+      const summaryResult = { ...mockApproveResult, conversation_summary: summary };
       prisma.review.findFirst.mockResolvedValue({ ...mockReview, ai_session_id: 'session-123' });
       aiService.approveDraft.mockResolvedValue(summaryResult);
+      prisma.review.update.mockResolvedValue({});
+      prisma.reviewDraft.findFirst.mockResolvedValue(null);
+      prisma.reviewDraft.upsert.mockResolvedValue({});
+      prisma.reviewDraft.updateMany.mockResolvedValue({ count: 1 });
+      aiService.endSession.mockResolvedValue({ success: true });
+      prisma.conversationSummary.create.mockResolvedValue({});
+
+      await service.approveDraft(USER_ID, REVIEW_ID);
+
+      expect(prisma.review.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ conversation_summary: summary }),
+        }),
+      );
+      expect(prisma.conversationSummary.create).toHaveBeenCalledWith({
+        data: { review_id: REVIEW_ID, summary },
+      });
+    });
+
+    it('creates a ConversationSummary row in conversation_summaries when approve returns a non-null summary', async () => {
+      const summary = 'Loved the ambiance, will return.';
+      prisma.review.findFirst.mockResolvedValue({ ...mockReview, ai_session_id: 'session-123' });
+      aiService.approveDraft.mockResolvedValue({ ...mockApproveResult, conversation_summary: summary });
+      prisma.review.update.mockResolvedValue({});
+      prisma.reviewDraft.findFirst.mockResolvedValue(null);
+      prisma.reviewDraft.upsert.mockResolvedValue({});
+      prisma.reviewDraft.updateMany.mockResolvedValue({ count: 1 });
+      aiService.endSession.mockResolvedValue({ success: true });
+      prisma.conversationSummary.create.mockResolvedValue({});
+
+      await service.approveDraft(USER_ID, REVIEW_ID);
+
+      expect(prisma.conversationSummary.create).toHaveBeenCalledWith({
+        data: { review_id: REVIEW_ID, summary },
+      });
+    });
+
+    it('does not create a ConversationSummary row when summary is null', async () => {
+      prisma.review.findFirst.mockResolvedValue({ ...mockReview, ai_session_id: 'session-123' });
+      aiService.approveDraft.mockResolvedValue({ ...mockApproveResult, conversation_summary: null });
       prisma.review.update.mockResolvedValue({});
       prisma.reviewDraft.findFirst.mockResolvedValue(null);
       prisma.reviewDraft.upsert.mockResolvedValue({});
@@ -1231,13 +1296,7 @@ describe('ReviewsService', () => {
 
       await service.approveDraft(USER_ID, REVIEW_ID);
 
-      expect(prisma.review.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            conversation_summary: 'The user had a great experience with the staff.',
-          }),
-        }),
-      );
+      expect(prisma.conversationSummary.create).not.toHaveBeenCalled();
     });
 
     it('throws ForbiddenException when the review belongs to another user', async () => {

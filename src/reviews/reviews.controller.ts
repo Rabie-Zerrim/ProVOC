@@ -485,6 +485,37 @@ export class ReviewsController {
     return this.reviewsService.getChatHistory(req.user.user_id, id);
   }
 
+  @Post(':id/chat/filter')
+  @ApiTags('AI Review Composer')
+  @ApiOperation({ summary: 'Filter review text for compliance via pv-ai' })
+  @ApiParam({ name: 'id', description: 'Review UUID' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['text'],
+      properties: {
+        text: { type: 'string', example: 'Great place, highly recommend!' },
+      },
+    },
+  })
+  @ApiCreatedResponse({
+    description: 'Filter result from pv-ai; always returns { approved: true } on any AI error',
+    schema: {
+      properties: {
+        approved: { type: 'boolean' },
+      },
+    },
+  })
+  @ApiNotFoundResponse({ description: 'Review not found' })
+  @ApiForbiddenResponse({ description: 'Review belongs to another user' })
+  filterReviewText(
+    @Request() req,
+    @Param('id') id: string,
+    @Body('text') text: string,
+  ) {
+    return this.reviewsService.filterReviewText(req.user.user_id, id, text);
+  }
+
   @Get(':id/drafts')
   @ApiTags('AI Review Composer')
   @ApiOperation({ summary: 'Get all review drafts with network info' })

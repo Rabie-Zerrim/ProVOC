@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 import { AiService } from './ai.service';
 
 describe('AiService', () => {
@@ -79,6 +79,75 @@ describe('AiService', () => {
 
       const [, body] = httpService.post.mock.calls[1];
       expect(body).not.toHaveProperty('previous_messages');
+    });
+
+    it('includes conversation_summary in the request body when provided', async () => {
+      mockRelayAndChatStart({ session_id: 's3', initial_response: 'Hi', detected_language: 'en' });
+      const summary = 'User loved the food but found the service slow.';
+
+      await service.startChat(
+        'review-1',
+        'transcript',
+        'listing-1',
+        'en',
+        { business_name: 'Biz' },
+        'user-1',
+        undefined,
+        'start',
+        summary,
+      );
+
+      const [, body] = httpService.post.mock.calls[1];
+      expect(body).toEqual(
+        expect.objectContaining({ conversation_summary: summary }),
+      );
+    });
+
+    it('omits conversation_summary from the request body when null', async () => {
+      mockRelayAndChatStart({ session_id: 's4', initial_response: 'Hi', detected_language: 'en' });
+
+      await service.startChat(
+        'review-1',
+        'transcript',
+        'listing-1',
+        'en',
+        { business_name: 'Biz' },
+        'user-1',
+        undefined,
+        'start',
+        null,
+      );
+
+      const [, body] = httpService.post.mock.calls[1];
+      expect(body).not.toHaveProperty('conversation_summary');
+    });
+  });
+
+  describe('filterReviewText', () => {
+    it('returns the pv-ai response on success', async () => {
+      httpService.post
+        .mockReturnValueOnce(
+          of({ data: { access_token: 'relay-token', token_type: 'bearer', expires_in: 1800 } }),
+        )
+        .mockReturnValueOnce(of({ data: { approved: false, reason: 'profanity detected' } }));
+
+      const result = await service.filterReviewText('user-1', 'some offensive text');
+
+      expect(result).toEqual({ approved: false, reason: 'profanity detected' });
+      const [, body] = httpService.post.mock.calls[1];
+      expect(body).toEqual({ text: 'some offensive text' });
+    });
+
+    it('returns { approved: true } when pv-ai call fails', async () => {
+      httpService.post
+        .mockReturnValueOnce(
+          of({ data: { access_token: 'relay-token', token_type: 'bearer', expires_in: 1800 } }),
+        )
+        .mockReturnValueOnce(throwError(() => new Error('service unavailable')));
+
+      const result = await service.filterReviewText('user-1', 'some text');
+
+      expect(result).toEqual({ approved: true });
     });
   });
 });
