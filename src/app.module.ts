@@ -13,6 +13,7 @@ import { NetworksModule } from './networks/networks.module';
 import { RecommendationsModule } from './recommendations/recommendations.module';
 import { ZembraModule } from './zembra/zembra.module';
 import { UsersModule } from './users/users.module';
+import { MediaModule } from './media/media.module';
 
 @Module({
   imports: [
@@ -62,6 +63,7 @@ import { UsersModule } from './users/users.module';
     RecommendationsModule,
     ZembraModule,
     UsersModule,
+    MediaModule,
   ],
   controllers: [AppController],
   providers: [AppService],
