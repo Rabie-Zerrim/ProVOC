@@ -84,6 +84,8 @@ npm run start:dev
 | `REDIS_PASSWORD` | (empty) | No | Redis auth password |
 | `ZEMBRA_API_KEY` | Bearer token from Zembra dashboard | No (dead config — kept in Railway but unused since Google Places migration; see Section 22) | Previously authenticated calls to Zembra |
 | `ZEMBRA_BASE_URL` | `https://localapi.zembra.io` (dev) / `https://beta.api.zembra.io` (staging) | No (dead config — see Section 22) | Previously used Zembra base URL |
+| `ZEMBRA_API_URL` | ngrok tunnel URL e.g. `https://xxxx.ngrok-free.app` | Yes (for `GET /zembra/match`) | Base URL read by `ZembraService` (`src/zembra/zembra.service.ts`). Must be updated on Railway every time the ngrok tunnel restarts — free-tier URLs are ephemeral. Has **no effect** on `GET /listings/:id` or "no platforms found" (that path is pure DB). |
+| `ZEMBRA_API_TOKEN` | Same long Bearer token as `ZEMBRA_API_KEY` | Yes (for `GET /zembra/match`) | The env var **actually read** by `ZembraService` (`this.config.get('ZEMBRA_API_TOKEN')`). `ZEMBRA_API_KEY` is NOT read by the Zembra module. If this var is empty, `fetchNetwork()` sends `Authorization: Bearer ` (empty) and Zembra returns 401. |
 | `GOOGLE_PLACES_API_KEY` | Google Cloud API key with Places API (New) enabled | Yes | Authenticates calls to Google Places Text Search (`POST /v1/places:searchText`) |
 | `FASTAPI_URL` | `http://localhost:8000` | Yes | URL of the `pv-ai` FastAPI sidecar |
 | `FACEBOOK_TEST_TOKEN` | User access token from Meta Graph Explorer | Yes (posting) | Access token used directly by `PostingWorker` to call `POST /v21.0/me/feed` for the demo; no OAuth flow needed |
@@ -1947,3 +1949,235 @@ rating?: number;
 ### Test count
 
 **165 passing** (unchanged — existing tests cover the rating field; no new test needed as the transform is a DTO-layer coercion with no service-level logic). `tsc --noEmit` clean.
+
+---
+
+## 33. ZEMBRA / NGROK DIAGNOSTICS (added 2026-06-24)
+
+### "No platforms found" — source and cause
+
+The message **"No platforms found for this business"** lives in `pv-app/app/review/networks.tsx` (line 111) and renders when `networks.length === 0`.
+
+**Which endpoint populates it:**
+
+`networks.tsx` calls `GET /listings/:id` on mount. It reads `data.networks` from the response. No other endpoint (`GET /networks`, `GET /zembra/match`) is involved on this screen.
+
+**What that endpoint does:**
+
+`ListingsService.findById()` calls `listingsToNetworks(business_id)`:
+
+```typescript
+prisma.listing.findMany({
+  where: { business_id: businessId, is_active: true },
+  include: { network: true },
+})
+```
+
+**Pure DB read — no Zembra call, no ngrok, no external HTTP.**
+
+**Conditions that produce an empty `networks` array:**
+
+| Cause | How |
+|---|---|
+| `GET /listings/:id` throws (404 / network error) | Frontend `.catch(() => setNetworks([]))` silently empties the list |
+| All listings for the business have `is_active = false` | `listingsToNetworks` query returns nothing; `Listing.is_active` defaults to `true` so this only occurs if a listing was explicitly deactivated |
+| Orphaned data from duplicate-Google-network cleanup (§29) | Cleanup script could leave listings with a broken `network_id` FK |
+
+**`ZEMBRA_API_URL` has zero effect on this screen.** The Zembra module is only used by `GET /zembra/match`, which is a separate flow.
+
+---
+
+### `ZEMBRA_API_TOKEN` vs `ZEMBRA_API_KEY` — which one is actually used
+
+`src/zembra/zembra.service.ts` reads:
+
+```typescript
+this.apiUrl   = this.config.get<string>('ZEMBRA_API_URL')   ?? '';
+this.apiToken = this.config.get<string>('ZEMBRA_API_TOKEN') ?? '';
+```
+
+`ZEMBRA_API_KEY` is **not read** by the Zembra module. It is dead config (formerly used by the listings search path, removed in §22). Both vars hold the same key value in `.env` and on Railway, but only `ZEMBRA_API_TOKEN` is wired up.
+
+---
+
+### Headers sent to Zembra / ngrok
+
+`fetchNetwork()` sends exactly one header:
+
+```
+Authorization: Bearer <ZEMBRA_API_TOKEN>
+```
+
+No `Host`, no `Content-Type`, no `Accept`. The `--host-header=localapi.zembra.io` rewrite is applied by the ngrok process itself (via the CLI flag), not by pv-bff code. The old `ZEMBRA_HOST_HEADER` config and its associated `Host` override were removed in §28.
+
+---
+
+### 401 / error behaviour — Zembra vs ngrok
+
+All errors in `fetchNetwork()` are caught and return `null`; the controller returns `{ networks: {} }` on any failure. Nothing surfaces to the client as an HTTP error.
+
+| Scenario | What actually happens |
+|---|---|
+| ngrok not running | `ECONNREFUSED` / `ENOTFOUND` — connection error, **not** a 401 |
+| ngrok running, `ZEMBRA_API_TOKEN` empty or wrong | Request reaches Zembra → **Zembra returns 401** |
+| ngrok running, correct token | Zembra returns `200 { status: "SUCCESS", data: { yelp: {...} } }` |
+| Pre-§28: `Host` header sent by BFF | ngrok rejected with `"Received a request for different Host than the current tunnel"` — fixed by removing the override |
+
+A 401 is always from Zembra itself. ngrok does not authenticate tokens.
+
+---
+
+### ngrok startup command (reference)
+
+```bash
+ngrok http https://localhost:443 --host-header=localapi.zembra.io
+```
+
+After starting: copy the `https://xxxx.ngrok-free.app` URL → update `ZEMBRA_API_URL` on Railway → redeploy. Required before every demo/test session that needs live Zembra data (free-tier URLs are ephemeral).
+
+---
+
+## 34. SESSION 2026-06-24 — PRODUCTION DB CLEANUP + FINAL STATE
+
+### Railway production DB cleanup — duplicate Google network removed
+
+`cleanup_duplicate_google_networks.js` was run against Railway production (`DATABASE_URL` set to the Railway public Postgres URL). One duplicate network was found and fully removed:
+
+| Step | What was deleted | Why safe |
+|---|---|---|
+| `user_platform_accounts` row `cf30ce4e` | Stale placeholder — `oauth_token`, `refresh_token`, `external_user_id` all null; `is_active: false`; created 2026-06-17 | No real OAuth data; created by old pre-nullable-FK code path |
+| `review_platform_posts` row `6dcb838f` | `status: clipboard_opened`, no `external_review_id`, no `posted_at` | Pure audit record, no real post ever made |
+| `networks` row `a0e76a10` (`google_5`) | Orphaned duplicate network | No listings pointed to it; `NetworkPreference` deleted first |
+
+No listings were re-pointed (none referenced `google_5`). Canonical `Google` network (`00000002-0000-0000-0000-000000000000`) is untouched.
+
+---
+
+### `purpose` field forwarding pv-bff → pv-ai — confirmed complete
+
+Implemented in §30. Confirmed end-to-end in this session:
+
+- `StartChatDto` (`src/reviews/dto/start-chat.dto.ts`) — `purpose?: 'start' | 'regenerate'`
+- `SendMessageDto` (`src/reviews/dto/send-message.dto.ts`) — `purpose?: 'message' | 'rephrase'`
+- `AiService.startChat()` — 8th param; always sends `purpose ?? 'start'` to pv-ai
+- `AiService.sendMessage()` — 4th param; always sends `purpose ?? 'message'` to pv-ai
+- `ReviewsService.startChat()` — derives `'regenerate'` vs `'start'` from `previous_messages` presence
+- `ReviewsService.sendMessage()` — derives `'rephrase'` vs `'message'` from message prefix
+
+Note: `StartChatDto.purpose` and `SendMessageDto.purpose` fields are received from the client but not consulted — the service derives purpose from content/context. The correct value reaches pv-ai in all cases.
+
+---
+
+### PFE report — final project state as of 2026-06-24
+
+| Metric | Value |
+|---|---|
+| Unit tests | **165 passing** across 13 suites |
+| Database tables | **21 tables** (22 models in schema) |
+| Prisma migrations | **11 applied migrations** |
+| Validated end-to-end | Google Places search → save → AI compose → clipboard deep-link; Yelp via Zembra match → `zembra_external_id` → `writeareview` URL |
+| Railway deployment | pv-bff on Railway, pv-ai on Railway, shared Redis on Railway, Postgres on Railway |
+
+---
+
+## 35. SESSION 2026-06-29 — S3 PHOTO UPLOAD FOR REVIEWS
+
+### What was implemented
+
+New `src/media/` module exposing three authenticated endpoints for uploading, retrieving, and deleting review photos stored in AWS S3.
+
+### Endpoints
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/reviews/:id/media` | JWT | Upload a JPEG or PNG photo for a review; returns `{ media_id, url }` |
+| `GET` | `/reviews/:id/media` | JWT | List all photos for a review; returns `[{ media_id, url, created_at }]` |
+| `DELETE` | `/reviews/:id/media/:mediaId` | JWT | Delete a specific photo (S3 + DB); owner-scoped |
+
+**Database table used:** `review_medias` — already existed in schema; no migration needed. Fields written: `review_id`, `media_type` (`'image'`), `s3_key`, `original_filename`, `file_size_bytes`, `mime_type`.
+
+### S3 key format
+
+```
+reviews/{reviewId}/{uuid}.{ext}
+```
+
+`ext` is `png` for `image/png`, `jpg` for `image/jpeg`. One presigned `GetObject` URL per media item, 3600-second expiry.
+
+### File handling
+
+- Multer `memoryStorage` — file is held in-process memory (`file.buffer`) and streamed directly to S3 via `PutObjectCommand`; nothing is written to disk.
+- Field name: `photo` (multipart/form-data).
+- Max file size: 5 MB (enforced by multer `limits.fileSize`).
+- Accepted MIME types: `image/jpeg`, `image/png` — all others are rejected with 400 before the controller body runs (enforced in multer `fileFilter`).
+
+### AWS SDK
+
+**Packages added:** `@aws-sdk/client-s3`, `@aws-sdk/s3-request-presigner` (AWS SDK v3 modular style — only the two commands needed are imported, no monolithic `aws-sdk` v2 dependency).
+
+`S3Client` is instantiated once in `MediaService` constructor from `ConfigService` values:
+
+| Env var | Purpose |
+|---|---|
+| `AWS_ACCESS_KEY_ID` | IAM access key |
+| `AWS_SECRET_ACCESS_KEY` | IAM secret key |
+| `AWS_REGION` | `us-east-1` |
+| `AWS_S3_BUCKET` | `provoc-review-media` |
+
+All four variables added to Railway.
+
+### Ownership and error model
+
+- **Upload / GET:** `prisma.review.findFirst({ where: { review_id, user_id, deleted_at: null } })` — returns 404 for both "not found" and "wrong user" (prevents information leakage).
+- **Delete:** `prisma.reviewMedia.findFirst({ where: { media_id, review_id } })` then checks `media.review.user_id === userId` — returns 404 if the `(mediaId, reviewId)` pair doesn't exist, 403 if it exists but belongs to another user.
+- Delete order: S3 `DeleteObjectCommand` first, then `prisma.reviewMedia.delete` — keeps S3 and DB consistent (an orphaned S3 object is acceptable; a DB row pointing to a missing S3 key is not).
+
+### Files created / changed
+
+| File | Change |
+|---|---|
+| [src/media/media.service.ts](src/media/media.service.ts) | New. `MediaService`: `uploadReviewPhoto`, `getReviewMedias`, `deleteReviewMedia`, private `getPresignedUrl` |
+| [src/media/media.controller.ts](src/media/media.controller.ts) | New. `MediaController` at `@Controller('reviews')`: three endpoints with full Swagger decoration |
+| [src/media/media.module.ts](src/media/media.module.ts) | New. Imports `PrismaModule`; declares controller and service |
+| [src/app.module.ts](src/app.module.ts) | `MediaModule` added to imports array |
+
+### Test count
+
+**165 passing** (unchanged — no new unit tests written for this module; existing 165 tests continue to pass). `tsc --noEmit` clean.
+
+---
+
+## 36. SESSION 2026-06-29 — CONVERSATION SUMMARY, S3 PHOTO UPLOAD, CONTENT FILTER PROXY
+
+### Conversation summary persistence (implemented and deployed)
+
+- `ConversationSummary` model added to [prisma/schema.prisma](prisma/schema.prisma)
+  (`summary_id` PK UUID, `review_id` FK, `summary` text, `created_at`, `@@index([review_id])`, `@@map("conversation_summaries")`)
+- Migration `20260629024506_add_conversation_summaries` applied locally and to Railway
+- `approveDraft()` saves `result.conversation_summary` to `conversation_summaries` table
+  via `prisma.conversationSummary.create`, guarded by `if (result.conversation_summary)`
+- `startChat()` on resume queries `prisma.conversationSummary.findFirst` (latest by
+  `created_at`) and passes result as 9th arg to `aiService.startChat()`
+  Only queries when `review.review_text` is non-empty
+- `ai.service.ts startChat()` accepts `conversationSummary?: string | null` as 9th
+  parameter, includes as `body.conversation_summary` when truthy
+- Tests updated: 6 existing `startChat` assertions updated, 4 new tests added,
+  2 new tests in `ai.service.spec.ts`
+
+### S3 photo upload (implemented and deployed)
+
+- New `src/media/` module: `MediaService`, `MediaController`, `MediaModule`
+- `POST /reviews/:id/media` — multer `memoryStorage`, 5 MB limit, jpeg/png only
+- `GET /reviews/:id/media` — returns presigned URLs with 1 hr expiry
+- `DELETE /reviews/:id/media/:mediaId`
+- S3 key format: `reviews/{reviewId}/{uuid}.{ext}`
+- AWS env vars on Railway: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+  `AWS_REGION=us-east-1`, `AWS_S3_BUCKET=provoc-review-media`
+- 165 → 172 tests passing
+
+### Content filter proxy (implemented and deployed)
+
+- `POST /reviews/:id/chat/filter` added to [src/reviews/reviews.controller.ts](src/reviews/reviews.controller.ts) and [src/reviews/reviews.service.ts](src/reviews/reviews.service.ts)
+- `filterReviewText(userId, text)` added to [src/ai/ai.service.ts](src/ai/ai.service.ts); proxies to pv-ai `POST /api/chat/filter` with body `{ text }`; fails open to `{ approved: true }` on any error
+- Owner-scoped: service does `findFirst({ where: { review_id, deleted_at: null } })` then 404/403 guards before delegating to `aiService`
+- 2 new tests in `ai.service.spec.ts` (happy path + fail-open), 172 tests total
