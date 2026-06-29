@@ -264,11 +264,12 @@ model Review {
   created_at           DateTime             @default(now())
   updated_at     DateTime             @updatedAt
   deleted_at     DateTime?
-  chat_messages  ReviewChatMessage[]
-  drafts         ReviewDraft[]
-  histories      ReviewHistory[]
-  medias         ReviewMedia[]
-  platform_posts ReviewPlatformPost[]
+  chat_messages         ReviewChatMessage[]
+  conversation_summaries ConversationSummary[]
+  drafts                ReviewDraft[]
+  histories             ReviewHistory[]
+  medias                ReviewMedia[]
+  platform_posts        ReviewPlatformPost[]
   business       Business             @relation(fields: [business_id], references: [business_id])
   listing        Listing?             @relation(fields: [listing_id], references: [listing_id])
   user           User                 @relation(fields: [user_id], references: [user_id])
@@ -378,4 +379,15 @@ model Notification {
   user            User      @relation(fields: [user_id], references: [user_id])
 
   @@map("notifications")
+}
+
+model ConversationSummary {
+  summary_id String   @id @default(uuid()) @db.Uuid
+  review_id  String   @db.Uuid
+  summary    String
+  created_at DateTime @default(now())
+  review     Review   @relation(fields: [review_id], references: [review_id])
+
+  @@index([review_id])
+  @@map("conversation_summaries")
 }
