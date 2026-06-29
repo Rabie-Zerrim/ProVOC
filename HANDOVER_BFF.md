@@ -2181,3 +2181,11 @@ All four variables added to Railway.
 - `filterReviewText(userId, text)` added to [src/ai/ai.service.ts](src/ai/ai.service.ts); proxies to pv-ai `POST /api/chat/filter` with body `{ text }`; fails open to `{ approved: true }` on any error
 - Owner-scoped: service does `findFirst({ where: { review_id, deleted_at: null } })` then 404/403 guards before delegating to `aiService`
 - 2 new tests in `ai.service.spec.ts` (happy path + fail-open), 172 tests total
+
+### Railway build fix (2026-06-29)
+
+- `package.json` build script changed to `"prisma generate && nest build"`
+  so Prisma client is always regenerated before TypeScript compilation
+- `prisma.config.ts`: replaced `env("DATABASE_URL")` with
+  `process.env.DATABASE_URL ?? ""` so `prisma generate` succeeds during
+  Railway build without `DATABASE_URL` being injected
