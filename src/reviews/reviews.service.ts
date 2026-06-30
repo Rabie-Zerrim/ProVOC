@@ -497,12 +497,14 @@ export class ReviewsService {
     if (review.user_id !== userId) throw new ForbiddenException('Access denied');
 
     const result = await this.aiService.transcribeAudio(audioBuffer, language, mimetype, userId);
+    console.log('transcribe response:', JSON.stringify(result));
 
     await this.prisma.review.update({
       where: { review_id: reviewId },
       data: { review_text: result.transcript, language: result.detected_language },
     });
 
+    console.log('sending transcript to chat:', result.transcript?.substring(0, 50));
     return { transcript: result.transcript, detected_language: result.detected_language, review_id: reviewId };
   }
 
@@ -515,6 +517,8 @@ export class ReviewsService {
     });
     if (!review) throw new NotFoundException(`Review ${reviewId} not found`);
     if (review.user_id !== userId) throw new ForbiddenException('Access denied');
+    console.log('startChat review_id:', reviewId);
+    console.log('startChat review_text:', review.review_text?.substring(0, 50));
 
     const allListings = await this.prisma.listing.findMany({
       where: { business_id: review.business_id, is_active: true },
