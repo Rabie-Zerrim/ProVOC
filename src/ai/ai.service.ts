@@ -95,6 +95,7 @@ export class AiService {
     form.append('language', language);
     const authHeaders = await this.getAuthHeaders(userId);
     const raw = await this.post<any>('/api/transcribe', form, { ...form.getHeaders(), ...authHeaders });
+    console.log('raw pv-ai transcribe response:', JSON.stringify(raw));
     return {
       transcript: raw.transcription ?? raw.transcript ?? '',
       detected_language: raw.language ?? raw.detected_language ?? language,
