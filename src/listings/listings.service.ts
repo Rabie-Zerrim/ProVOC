@@ -56,6 +56,7 @@ export class ListingsService {
       });
       return mapped;
     } catch (err: any) {
+      if (err?.code === 'ERR_CANCELED') return {};
       const status = err?.response?.status;
       if (status === 400 || status === 404) return {};
       throw err;
